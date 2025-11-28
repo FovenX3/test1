@@ -2,7 +2,8 @@
 
 set -e
 
-echo "=== Raspberry Pi Pico Deployment Script ==="
+echo "=== NeoPico HD Deployment Script ==="
+echo ""
 
 # Build the project
 echo "Building project..."
@@ -14,10 +15,11 @@ if [ ! -d "build" ]; then
 fi
 
 cd build
-make -j$(sysctl -n hw.ncpu)
+make -j$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 cd ..
 
 echo "Build complete!"
+echo ""
 
 # Check if UF2 file exists
 UF2_FILE="build/src/neopico_hd.uf2"
@@ -26,28 +28,30 @@ if [ ! -f "$UF2_FILE" ]; then
     exit 1
 fi
 
-echo "UF2 file found: $UF2_FILE"
-
-# Find the Pico mount point
-PICO_MOUNT="/Volumes/RPI-RP2"
-
-if [ ! -d "$PICO_MOUNT" ]; then
-    echo ""
-    echo "Error: Pico not found at $PICO_MOUNT"
-    echo "Please:"
-    echo "  1. Connect your Pico while holding the BOOTSEL button"
-    echo "  2. Or unplug it, hold BOOTSEL, and plug it back in"
-    echo "  3. Make sure it appears as a USB drive named RPI-RP2"
-    exit 1
-fi
-
-echo "Pico found at: $PICO_MOUNT"
-
-# Copy the UF2 file to the Pico
-echo "Copying UF2 file to Pico..."
-cp "$UF2_FILE" "$PICO_MOUNT/"
-
+echo "UF2 file ready: $(ls -lh $UF2_FILE | awk '{print $9, "(" $5 ")"}')"
 echo ""
-echo "=== Deployment Complete! ==="
-echo "The Pico will automatically reboot and start running your program."
-echo "Connect to serial monitor (e.g., screen /dev/tty.usbmodem* 115200) to see output."
+
+# Instructions for deployment
+echo "=== DEPLOYMENT INSTRUCTIONS ==="
+echo ""
+echo "1. Put your Pico in BOOTSEL mode:"
+echo "   - Unplug the Pico from USB"
+echo "   - Hold the BOOTSEL button"
+echo "   - While holding BOOTSEL, plug it back in"
+echo ""
+echo "2. Find where the Pico mounted:"
+echo "   - On macOS: ls /Volumes/ | grep -i rpi"
+echo "   - On Linux: lsblk | grep -i pico"
+echo "   - On Windows: Check Device Manager"
+echo ""
+echo "3. Copy the UF2 file to the Pico mount point:"
+echo "   cp $UF2_FILE /path/to/mounted/RPI-RP2"
+echo ""
+echo "4. The Pico will automatically reboot and start running"
+echo ""
+echo "5. Monitor serial output with screen:"
+echo "   screen /dev/tty.usbmodem* 115200"
+echo "   (Replace * with the correct number, or type 'ls /dev/tty.usbmodem' to find it)"
+echo ""
+echo "   To exit screen: Press Ctrl-A then Ctrl-D (or Ctrl-A then Shift-K)"
+echo ""
