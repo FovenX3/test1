@@ -1,6 +1,7 @@
 # Add executable
 add_executable(neopico_hd
     main.c
+    usb_descriptors.c
 )
 
 # Generate PIO headers
@@ -13,10 +14,15 @@ target_link_libraries(neopico_hd
     hardware_clocks
     hardware_dma
     hardware_irq
+    tinyusb_device
+    tinyusb_board
 )
 
-# Enable USB output, disable UART output
-pico_enable_stdio_usb(neopico_hd 1)
+# Include directory for tusb_config.h
+target_include_directories(neopico_hd PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+
+# Disable stdio USB (we handle USB ourselves via TinyUSB)
+pico_enable_stdio_usb(neopico_hd 0)
 pico_enable_stdio_uart(neopico_hd 0)
 
 # Create map/bin/hex/uf2 files

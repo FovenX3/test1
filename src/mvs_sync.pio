@@ -85,21 +85,36 @@ void mvs_sync_4a_program_init(PIO pio, uint sm, uint offset, uint pin_csync, uin
 
 
 ;
-; MVS Pixel Capture - Sample R4, G4, B4, GND on PCLK edges (4-bit aligned)
+; MVS Pixel Capture - CSYNC-synchronized version
+;
+; Waits for IRQ4, then waits for CSYNC rising edge (start of line),
+; then syncs to PCLK. This ensures consistent horizontal alignment.
 ;
 ; Input pins:
 ;   pin 0: R4 (red pixel data)
 ;   pin 1: G4 (green pixel data)
 ;   pin 2: B4 (blue pixel data)
 ;   pin 3: GND (dummy bit for autopush alignment - GPIO 5 tied to ground)
-;   pin 4: PCLK (pixel clock, 6 MHz)
+; JMP pin: CSYNC (GPIO 0)
+; Wait GPIO 1: PCLK
 ;
 
 .program mvs_pixel_capture
 
     ; Wait for trigger signal from C code (IRQ 4)
-    ; This ensures we start at a deterministic point
     wait 1 irq 4
+
+    ; Wait for CSYNC to be LOW (we might be mid-line)
+    wait 0 gpio 0
+
+    ; Wait for CSYNC to go HIGH (start of new line)
+    ; This gives us a consistent starting point
+    wait 1 gpio 0
+
+    ; Now sync to pixel clock - wait for falling then rising edge
+    ; This ensures we sample at the same phase every time
+    wait 0 gpio 1
+    wait 1 gpio 1
 
 .wrap_target
     ; Wait for PCLK rising edge
