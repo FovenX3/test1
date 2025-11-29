@@ -17,22 +17,10 @@ import pygame
 # Frame constants (must match Pico)
 FRAME_WIDTH = 320
 FRAME_HEIGHT = 224
-PACKED_FRAME_SIZE = (FRAME_WIDTH * FRAME_HEIGHT) // 2  # 2 pixels per byte
+FRAME_SIZE_BYTES = FRAME_WIDTH * FRAME_HEIGHT  # 1 byte per pixel (8-bit grayscale)
 
 # Sync header
 SYNC_HEADER = bytes([0x55, 0xAA, 0xAA, 0x55])  # Little endian: 0xAA55, 0x55AA
-
-# 3-bit RGB palette (8 colors)
-PALETTE = [
-    (0, 0, 0),        # 0: Black
-    (255, 0, 0),      # 1: Red
-    (0, 255, 0),      # 2: Green
-    (255, 255, 0),    # 3: Yellow
-    (0, 0, 255),      # 4: Blue
-    (255, 0, 255),    # 5: Magenta
-    (0, 255, 255),    # 6: Cyan
-    (255, 255, 255),  # 7: White
-]
 
 
 def find_pico_port():
@@ -65,22 +53,18 @@ def sync_to_frame(ser):
 
 def read_frame(ser):
     """Read a complete frame, return None if sync lost."""
-    packed_data = ser.read(PACKED_FRAME_SIZE)
-    if len(packed_data) != PACKED_FRAME_SIZE:
+    frame_data = ser.read(FRAME_SIZE_BYTES)
+    if len(frame_data) != FRAME_SIZE_BYTES:
         # Short read - need to resync
         return None
-    return packed_data
+    return frame_data
 
 
-def unpack_frame(packed_data):
-    """Unpack nibble-packed pixels to RGB tuples."""
+def unpack_frame(frame_data):
+    """Unpack 8-bit grayscale pixels to RGB tuples."""
     pixels = []
-    for byte in packed_data:
-        # Low nibble = pixel 0, high nibble = pixel 1
-        p0 = byte & 0x07
-        p1 = (byte >> 4) & 0x07
-        pixels.append(PALETTE[p0])
-        pixels.append(PALETTE[p1])
+    for gray in frame_data:
+        pixels.append((gray, gray, gray))
     return pixels
 
 

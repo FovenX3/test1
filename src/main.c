@@ -1,20 +1,21 @@
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "pico/stdio_usb.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
-#include "tusb.h"
 #include "mvs_sync.pio.h"
 
 // =============================================================================
 // Pin Configuration
 // =============================================================================
 
-#define PIN_CSYNC 0
-#define PIN_PCLK 1
-#define PIN_R4 2
+#define PIN_R0 0   // RGB data: GPIO 0-14 (15 bits)
+#define PIN_GND 15 // Dummy bit for 16-bit alignment
+#define PIN_CSYNC 16
+#define PIN_PCLK 17
 
 // =============================================================================
 // MVS Timing Constants
@@ -31,28 +32,26 @@
 // Buffer Configuration
 // =============================================================================
 
-#define RAW_BUFFER_WORDS 14000
-#define PACKED_FRAME_SIZE ((FRAME_WIDTH * FRAME_HEIGHT) / 2)
+// Pico 2 has 520KB RAM - plenty of room!
+// Full frame needs: (224 + 22 offset + 10 margin) × 384 × 16 / 32 = 49,152 words
+// Frame buffer: 320 × 224 = 71,680 bytes (~72KB)
+// Available: ~520KB - 72KB - 20KB stack = 428KB = 107,000 words
+#define RAW_BUFFER_WORDS 50000 // ~200KB - plenty of margin for Pico 2
+
+// Grayscale frame buffer (1 byte per pixel for testing)
+#define FRAME_SIZE_BYTES (FRAME_WIDTH * FRAME_HEIGHT)
 
 #define SYNC_WORD_1 0xAA55
 #define SYNC_WORD_2 0x55AA
 
-static uint32_t raw_buffer_a[RAW_BUFFER_WORDS];
-static uint32_t raw_buffer_b[RAW_BUFFER_WORDS];
-
-static uint8_t packed_frame_a[PACKED_FRAME_SIZE];
-static uint8_t packed_frame_b[PACKED_FRAME_SIZE];
-
-static uint32_t *raw_capture_buf = raw_buffer_a;
-static uint32_t *raw_process_buf = raw_buffer_b;
-static uint8_t *packed_send_buf = packed_frame_a;
-static uint8_t *packed_fill_buf = packed_frame_b;
+static uint32_t raw_buffer[RAW_BUFFER_WORDS];
+static uint8_t frame_buffer[FRAME_WIDTH * FRAME_HEIGHT]; // 8-bit grayscale for testing
 
 static int dma_chan;
 
 static volatile bool frame_captured = false;
 static uint32_t frame_count = 0;
-static uint32_t capture_offset_lines = 22; // Fine-tuned for correct vertical alignment
+static uint32_t capture_offset_lines = 16; // Reduced to fit full active area in buffer
 
 // =============================================================================
 // Debug LED Functions
@@ -323,39 +322,42 @@ static bool wait_for_vsync_and_hsync(PIO pio, uint sm_sync, uint32_t timeout_ms)
 // Frame Processing
 // =============================================================================
 
-static void process_frame(uint32_t *raw_buf, uint8_t *packed_buf, uint32_t words_captured)
+// Extract pixels from raw capture buffer
+// TEST MODE: Only using R0-R4 (GPIO 0-4) to verify wiring
+// Output: 8-bit grayscale (5-bit red expanded to 8-bit)
+static void process_frame(uint32_t *raw_buf, uint8_t *frame_buf, uint32_t words_captured)
 {
-    uint32_t raw_bit_idx = capture_offset_lines * NEO_H_TOTAL * 4;
+    uint32_t raw_bit_idx = capture_offset_lines * NEO_H_TOTAL * 16;
     uint32_t out_idx = 0;
 
     for (uint32_t line = 0; line < FRAME_HEIGHT; line++)
     {
-        raw_bit_idx += NEO_H_ACTIVE_START * 4;
+        raw_bit_idx += NEO_H_ACTIVE_START * 16;
 
-        for (uint32_t x = 0; x < FRAME_WIDTH; x += 2)
+        for (uint32_t x = 0; x < FRAME_WIDTH; x++)
         {
-            uint32_t word_idx_0 = raw_bit_idx / 32;
-            uint32_t bit_idx_0 = raw_bit_idx % 32;
-            uint8_t pixel_0 = 0;
-            if (word_idx_0 < words_captured)
-            {
-                pixel_0 = (raw_buf[word_idx_0] >> bit_idx_0) & 0x07;
-            }
-            raw_bit_idx += 4;
+            uint32_t word_idx = raw_bit_idx / 32;
+            uint32_t bit_idx = raw_bit_idx % 32;
 
-            uint32_t word_idx_1 = raw_bit_idx / 32;
-            uint32_t bit_idx_1 = raw_bit_idx % 32;
-            uint8_t pixel_1 = 0;
-            if (word_idx_1 < words_captured)
+            uint8_t pixel = 0;
+            if (word_idx < words_captured)
             {
-                pixel_1 = (raw_buf[word_idx_1] >> bit_idx_1) & 0x07;
-            }
-            raw_bit_idx += 4;
+                uint32_t raw_val = raw_buf[word_idx] >> bit_idx;
+                if (bit_idx > 16 && (word_idx + 1) < words_captured)
+                {
+                    raw_val |= raw_buf[word_idx + 1] << (32 - bit_idx);
+                }
 
-            packed_buf[out_idx++] = (pixel_1 << 4) | pixel_0;
+                // Extract R0-R4 (bits 0-4) and expand to 8-bit
+                uint8_t r5 = raw_val & 0x1F;
+                pixel = (r5 << 3) | (r5 >> 2); // Expand 5-bit to 8-bit
+            }
+
+            frame_buf[out_idx++] = pixel;
+            raw_bit_idx += 16;
         }
 
-        raw_bit_idx += (NEO_H_TOTAL - NEO_H_ACTIVE_START - FRAME_WIDTH) * 4;
+        raw_bit_idx += (NEO_H_TOTAL - NEO_H_ACTIVE_START - FRAME_WIDTH) * 16;
     }
 }
 
@@ -363,11 +365,11 @@ static void process_frame(uint32_t *raw_buf, uint8_t *packed_buf, uint32_t words
 // USB Transmission
 // =============================================================================
 
-static bool send_frame_usb(uint8_t *packed_buf)
-{
-    // Always run USB task first
-    tud_task();
+// Use TinyUSB directly for better throughput (stdio_usb uses it internally)
+#include "tusb.h"
 
+static bool send_frame_usb(uint8_t *frame_buf)
+{
     if (!tud_cdc_connected())
     {
         return false;
@@ -379,36 +381,24 @@ static bool send_frame_usb(uint8_t *packed_buf)
         (SYNC_WORD_1 >> 8) & 0xFF,
         SYNC_WORD_2 & 0xFF,
         (SYNC_WORD_2 >> 8) & 0xFF};
+
     tud_cdc_write(header, 4);
 
-    // Send complete frame with timeout
-    uint8_t *ptr = packed_buf;
-    uint32_t remaining = PACKED_FRAME_SIZE;
-    uint32_t stall_count = 0;
-    const uint32_t MAX_STALLS = 50000; // ~50ms worth of stalls
+    // Send frame in chunks
+    uint8_t *ptr = frame_buf;
+    uint32_t remaining = FRAME_SIZE_BYTES;
 
     while (remaining > 0)
     {
-        tud_task();
-
         uint32_t available = tud_cdc_write_available();
-        if (available == 0)
+        if (available > 0)
         {
-            stall_count++;
-            if (stall_count > MAX_STALLS)
-            {
-                // Taking too long, abort this frame
-                tud_cdc_write_flush();
-                return false;
-            }
-            continue;
+            uint32_t chunk = (remaining < available) ? remaining : available;
+            uint32_t written = tud_cdc_write(ptr, chunk);
+            ptr += written;
+            remaining -= written;
         }
-
-        stall_count = 0; // Reset on progress
-        uint32_t chunk = (remaining < available) ? remaining : available;
-        uint32_t written = tud_cdc_write(ptr, chunk);
-        ptr += written;
-        remaining -= written;
+        tud_task(); // Process USB
     }
 
     tud_cdc_write_flush();
@@ -419,41 +409,21 @@ static bool send_frame_usb(uint8_t *packed_buf)
 // DMA Configuration
 // =============================================================================
 
-static void setup_dma(PIO pio, uint sm_pixel, uint32_t *dest_buf)
+static void setup_dma(PIO pio, uint sm_pixel)
 {
     dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
     channel_config_set_read_increment(&cfg, false);
     channel_config_set_write_increment(&cfg, true);
     channel_config_set_dreq(&cfg, pio_get_dreq(pio, sm_pixel, false));
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
 
     dma_channel_configure(
         dma_chan,
         &cfg,
-        dest_buf,
+        raw_buffer,
         &pio->rxf[sm_pixel],
         RAW_BUFFER_WORDS,
         false);
-}
-
-static void start_capture(PIO pio, uint sm_pixel, uint sm_sync, uint32_t *dest_buf, uint offset_pixel)
-{
-    // Reconfigure DMA for new buffer
-    dma_channel_set_write_addr(dma_chan, dest_buf, false);
-    dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
-
-    // Reset pixel state machine to known state (PC = 0)
-    // This ensures we always start from the same point
-    pio_sm_set_enabled(pio, sm_pixel, false);
-    pio_sm_clear_fifos(pio, sm_pixel);
-    pio_sm_restart(pio, sm_pixel);
-    pio_sm_exec(pio, sm_pixel, pio_encode_jmp(offset_pixel)); // Jump to program start
-    pio_sm_set_enabled(pio, sm_pixel, true);
-
-    // Start DMA
-    dma_channel_start(dma_chan);
-
-    // Trigger pixel capture via IRQ4
-    pio_sm_exec(pio, sm_sync, pio_encode_irq_set(false, 4));
 }
 
 // =============================================================================
@@ -469,13 +439,10 @@ int main()
     // Blink 1: We're alive
     led_blink_code(1);
 
-    // Stage 2: USB init
-    tusb_init();
-
+    // Stage 2: USB init (handled by stdio_init_all)
     // Give USB time to enumerate
     for (int i = 0; i < 20; i++)
     {
-        tud_task();
         sleep_ms(100);
         led_on();
         sleep_ms(50);
@@ -494,14 +461,14 @@ int main()
 
     uint offset_pixel = pio_add_program(pio, &mvs_pixel_capture_program);
     uint sm_pixel = pio_claim_unused_sm(pio, true);
-    mvs_pixel_capture_program_init(pio, sm_pixel, offset_pixel, PIN_R4, PIN_PCLK);
+    mvs_pixel_capture_program_init(pio, sm_pixel, offset_pixel, PIN_R0, PIN_GND, PIN_CSYNC, PIN_PCLK);
 
     // Blink 3: PIO initialized
     led_blink_code(3);
 
     // Stage 4: DMA setup
     dma_chan = dma_claim_unused_channel(true);
-    setup_dma(pio, sm_pixel, raw_capture_buf);
+    setup_dma(pio, sm_pixel);
 
     // Blink 4: DMA initialized
     led_blink_code(4);
@@ -525,54 +492,45 @@ int main()
     // Main capture loop
     while (true)
     {
-        // Toggle LED every 30 frames (roughly 0.5 sec at 60fps)
-        gpio_put(PICO_DEFAULT_LED_PIN, (frame_count / 30) & 1);
+        // Toggle LED every 15 frames
+        gpio_put(PICO_DEFAULT_LED_PIN, (frame_count / 15) & 1);
 
-        // Keep USB alive
-        tud_task();
-
-        // Wait for VSYNC then first HSYNC - gives us deterministic start point
+        // Wait for VSYNC then first HSYNC
         bool got_sync = wait_for_vsync_and_hsync(pio, sm_sync, 100);
 
         if (!got_sync)
         {
-            tud_task();
             continue;
         }
 
-        // NOW start capture - we're at a known position (first line after VSYNC)
-        start_capture(pio, sm_pixel, sm_sync, raw_capture_buf, offset_pixel);
+        // Start capture
+        dma_channel_set_write_addr(dma_chan, raw_buffer, false);
+        dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
 
-        // Keep USB alive while capturing
-        tud_task();
+        pio_sm_set_enabled(pio, sm_pixel, false);
+        pio_sm_clear_fifos(pio, sm_pixel);
+        pio_sm_restart(pio, sm_pixel);
+        pio_sm_exec(pio, sm_pixel, pio_encode_jmp(offset_pixel));
+        pio_sm_set_enabled(pio, sm_pixel, true);
 
-        // Wait for next VSYNC (end of frame)
+        dma_channel_start(dma_chan);
+        pio_sm_exec(pio, sm_sync, pio_encode_irq_set(false, 4));
+
+        // Wait for frame end
         bool got_vsync = wait_for_vsync_timeout(pio, sm_sync, 100);
 
         if (!got_vsync)
         {
             dma_channel_abort(dma_chan);
-            tud_task();
             continue;
         }
 
         dma_channel_abort(dma_chan);
         uint32_t words_captured = RAW_BUFFER_WORDS - dma_channel_hw_addr(dma_chan)->transfer_count;
 
-        // Keep USB alive during processing
-        tud_task();
+        process_frame(raw_buffer, frame_buffer, words_captured);
 
-        process_frame(raw_capture_buf, packed_fill_buf, words_captured);
-
-        uint32_t *tmp_raw = raw_capture_buf;
-        raw_capture_buf = raw_process_buf;
-        raw_process_buf = tmp_raw;
-
-        uint8_t *tmp_packed = packed_fill_buf;
-        packed_fill_buf = packed_send_buf;
-        packed_send_buf = tmp_packed;
-
-        send_frame_usb(packed_send_buf);
+        send_frame_usb(frame_buffer);
 
         frame_count++;
     }
