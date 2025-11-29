@@ -17,7 +17,7 @@ import pygame
 # Frame constants (must match Pico)
 FRAME_WIDTH = 320
 FRAME_HEIGHT = 224
-FRAME_SIZE_BYTES = FRAME_WIDTH * FRAME_HEIGHT  # 1 byte per pixel (8-bit grayscale)
+FRAME_SIZE_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 2  # 2 bytes per pixel (RGB565)
 
 # Sync header
 SYNC_HEADER = bytes([0x55, 0xAA, 0xAA, 0x55])  # Little endian: 0xAA55, 0x55AA
@@ -61,10 +61,25 @@ def read_frame(ser):
 
 
 def unpack_frame(frame_data):
-    """Unpack 8-bit grayscale pixels to RGB tuples."""
+    """Unpack RGB565 pixels to RGB tuples."""
     pixels = []
-    for gray in frame_data:
-        pixels.append((gray, gray, gray))
+    for i in range(0, len(frame_data), 2):
+        # RGB565: RRRRRGGG GGGBBBBB (little-endian)
+        lo = frame_data[i]
+        hi = frame_data[i + 1]
+        rgb565 = lo | (hi << 8)
+
+        # Extract components
+        r5 = (rgb565 >> 11) & 0x1F
+        g6 = (rgb565 >> 5) & 0x3F
+        b5 = rgb565 & 0x1F
+
+        # Expand to 8-bit
+        r8 = (r5 << 3) | (r5 >> 2)
+        g8 = (g6 << 2) | (g6 >> 4)
+        b8 = (b5 << 3) | (b5 >> 2)
+
+        pixels.append((r8, g8, b8))
     return pixels
 
 

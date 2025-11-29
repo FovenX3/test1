@@ -38,14 +38,14 @@
 // Available: ~520KB - 72KB - 20KB stack = 428KB = 107,000 words
 #define RAW_BUFFER_WORDS 50000 // ~200KB - plenty of margin for Pico 2
 
-// Grayscale frame buffer (1 byte per pixel for testing)
-#define FRAME_SIZE_BYTES (FRAME_WIDTH * FRAME_HEIGHT)
+// RGB565 frame buffer (2 bytes per pixel)
+#define FRAME_SIZE_BYTES (FRAME_WIDTH * FRAME_HEIGHT * 2)
 
 #define SYNC_WORD_1 0xAA55
 #define SYNC_WORD_2 0x55AA
 
 static uint32_t raw_buffer[RAW_BUFFER_WORDS];
-static uint8_t frame_buffer[FRAME_WIDTH * FRAME_HEIGHT]; // 8-bit grayscale for testing
+static uint16_t frame_buffer[FRAME_WIDTH * FRAME_HEIGHT]; // RGB565
 
 static int dma_chan;
 
@@ -323,9 +323,9 @@ static bool wait_for_vsync_and_hsync(PIO pio, uint sm_sync, uint32_t timeout_ms)
 // =============================================================================
 
 // Extract pixels from raw capture buffer
-// TEST MODE: Only using R0-R4 (GPIO 0-4) to verify wiring
-// Output: 8-bit grayscale (5-bit red expanded to 8-bit)
-static void process_frame(uint32_t *raw_buf, uint8_t *frame_buf, uint32_t words_captured)
+// Input: 16 bits per pixel (GPIO 0-14 = R5+G5+B5, GPIO 15 = dummy)
+// Output: RGB565 (RRRRRGGGGGGBBBBB)
+static void process_frame(uint32_t *raw_buf, uint16_t *frame_buf, uint32_t words_captured)
 {
     uint32_t raw_bit_idx = capture_offset_lines * NEO_H_TOTAL * 16;
     uint32_t out_idx = 0;
@@ -339,7 +339,7 @@ static void process_frame(uint32_t *raw_buf, uint8_t *frame_buf, uint32_t words_
             uint32_t word_idx = raw_bit_idx / 32;
             uint32_t bit_idx = raw_bit_idx % 32;
 
-            uint8_t pixel = 0;
+            uint16_t pixel = 0;
             if (word_idx < words_captured)
             {
                 uint32_t raw_val = raw_buf[word_idx] >> bit_idx;
@@ -348,9 +348,18 @@ static void process_frame(uint32_t *raw_buf, uint8_t *frame_buf, uint32_t words_
                     raw_val |= raw_buf[word_idx + 1] << (32 - bit_idx);
                 }
 
-                // Extract R0-R4 (bits 0-4) and expand to 8-bit
-                uint8_t r5 = raw_val & 0x1F;
-                pixel = (r5 << 3) | (r5 >> 2); // Expand 5-bit to 8-bit
+                // Extract RGB555 from GPIO 0-14
+                // GPIO 0-4:   R0-R4 (5 red bits)
+                // GPIO 5-9:   B0-B4 (5 blue bits)
+                // GPIO 10-14: G0-G4 (5 green bits)
+                uint8_t r5 = raw_val & 0x1F;          // bits 0-4
+                uint8_t b5 = (raw_val >> 5) & 0x1F;   // bits 5-9
+                uint8_t g5 = (raw_val >> 10) & 0x1F; // bits 10-14
+
+                // Convert to RGB565: RRRRR GGGGGG BBBBB
+                // Expand G from 5 to 6 bits: g6 = (g5 << 1) | (g5 >> 4)
+                uint8_t g6 = (g5 << 1) | (g5 >> 4);
+                pixel = (r5 << 11) | (g6 << 5) | b5;
             }
 
             frame_buf[out_idx++] = pixel;
@@ -368,7 +377,7 @@ static void process_frame(uint32_t *raw_buf, uint8_t *frame_buf, uint32_t words_
 // Use TinyUSB directly for better throughput (stdio_usb uses it internally)
 #include "tusb.h"
 
-static bool send_frame_usb(uint8_t *frame_buf)
+static bool send_frame_usb(uint16_t *frame_buf)
 {
     if (!tud_cdc_connected())
     {
@@ -384,8 +393,8 @@ static bool send_frame_usb(uint8_t *frame_buf)
 
     tud_cdc_write(header, 4);
 
-    // Send frame in chunks
-    uint8_t *ptr = frame_buf;
+    // Send frame in chunks (cast to bytes)
+    uint8_t *ptr = (uint8_t *)frame_buf;
     uint32_t remaining = FRAME_SIZE_BYTES;
 
     while (remaining > 0)
