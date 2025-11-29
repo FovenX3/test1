@@ -21,7 +21,7 @@
 #define NEO_H_ACTIVE_START 0  // Pixel where active region starts (fine-tune for 1-bit capture)
 #define H_OFFSET_PIXELS 0     // Fine-tune horizontal alignment
 
-// DMA buffer for full frame capture + margin (2-bit RG)
+// DMA buffer for full frame capture + margin (2-bit GB)
 // We'll capture more than one frame, then find the correct frame boundary
 // Frame size: 264 lines × 384 pixels × 2 bits = 203,776 bits = 6,369 words
 // Add ~20 lines margin and buffer for safety = 8,000 words
@@ -242,7 +242,7 @@ int main()
         raw_pixel_idx += (NEO_H_TOTAL - NEO_H_ACTIVE_START - FRAME_WIDTH) * 2;
     }
 
-    // Output PGM (grayscale, 4 levels from 2-bit RG)
+    // Output PGM (grayscale, 4 levels from 2-bit GB)
     printf("P2\n");
     printf("%d %d\n", FRAME_WIDTH, FRAME_HEIGHT);
     printf("3\n");  // Max value: 3 (2-bit)
