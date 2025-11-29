@@ -31,27 +31,45 @@ fi
 echo "UF2 file ready: $(ls -lh $UF2_FILE | awk '{print $9, "(" $5 ")"}')"
 echo ""
 
-# Instructions for deployment
-echo "=== DEPLOYMENT INSTRUCTIONS ==="
+# Auto-detect Pico mount point
+echo "=== DETECTING PICO ==="
+PICO_MOUNT=""
+
+if [ -d "/Volumes/RPI-RP2" ]; then
+    PICO_MOUNT="/Volumes/RPI-RP2"
+    echo "✓ Found Pico at: $PICO_MOUNT"
+elif [ -d "/media/$(whoami)/RPI-RP2" ]; then
+    PICO_MOUNT="/media/$(whoami)/RPI-RP2"
+    echo "✓ Found Pico at: $PICO_MOUNT"
+elif [ -d "/mnt/d/RPI-RP2" ]; then
+    PICO_MOUNT="/mnt/d/RPI-RP2"
+    echo "✓ Found Pico at: $PICO_MOUNT"
+fi
+
 echo ""
-echo "1. Put your Pico in BOOTSEL mode:"
-echo "   - Unplug the Pico from USB"
-echo "   - Hold the BOOTSEL button"
-echo "   - While holding BOOTSEL, plug it back in"
+
+if [ -z "$PICO_MOUNT" ]; then
+    echo "⚠ Pico not detected!"
+    echo ""
+    echo "To deploy manually:"
+    echo "1. Put Pico in BOOTSEL mode (hold BOOT, press RESET)"
+    echo "2. Copy: cp $UF2_FILE /path/to/RPI-RP2/"
+    exit 0
+fi
+
+# Deploy
+echo "=== DEPLOYING ==="
+cp "$UF2_FILE" "$PICO_MOUNT/" || {
+    echo "✗ Deployment failed!"
+    exit 1
+}
+
+sync
+
+echo "✓ UF2 deployed successfully"
+echo "✓ Pico will reboot automatically"
 echo ""
-echo "2. Find where the Pico mounted:"
-echo "   - On macOS: ls /Volumes/ | grep -i rpi"
-echo "   - On Linux: lsblk | grep -i pico"
-echo "   - On Windows: Check Device Manager"
+echo "=== DONE ==="
 echo ""
-echo "3. Copy the UF2 file to the Pico mount point:"
-echo "   cp $UF2_FILE /path/to/mounted/RPI-RP2"
-echo ""
-echo "4. The Pico will automatically reboot and start running"
-echo ""
-echo "5. Monitor serial output with screen:"
-echo "   screen /dev/tty.usbmodem* 115200"
-echo "   (Replace * with the correct number, or type 'ls /dev/tty.usbmodem' to find it)"
-echo ""
-echo "   To exit screen: Press Ctrl-A then Ctrl-D (or Ctrl-A then Shift-K)"
+echo "Monitor with: screen /dev/tty.usbmodem* 115200"
 echo ""

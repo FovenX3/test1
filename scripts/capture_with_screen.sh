@@ -1,6 +1,6 @@
 #!/bin/bash
 
-LOGFILE="captured_output.txt"
+LOGFILE="captured_output.pbm"
 BAUD_RATE=115200
 
 # Allow passing device as argument

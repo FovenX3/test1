@@ -18,7 +18,8 @@
 #define NEO_V_TOTAL 264
 #define NEO_V_ACTIVE_START 24 // Line where active region starts
 #define NEO_V_ACTIVE_END 248  // Line where active region ends (24 + 224)
-#define NEO_H_ACTIVE_START 6  // Pixel where active region starts (skip horizontal blanking)
+#define NEO_H_ACTIVE_START 0  // Pixel where active region starts (fine-tune for 1-bit capture)
+#define H_OFFSET_PIXELS 0     // Fine-tune horizontal alignment
 
 // DMA buffer for full frame capture + margin
 // We'll capture more than one frame, then find the correct frame boundary
