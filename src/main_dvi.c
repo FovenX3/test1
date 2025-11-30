@@ -67,24 +67,24 @@ struct dvi_inst dvi0;
 
 #define H_THRESHOLD 288
 #define NEO_H_TOTAL 384
-#define NEO_H_ACTIVE_START 27
+#define NEO_H_ACTIVE_START 32  // Increased to skip more horizontal blanking
 
 // =============================================================================
 // Buffers
 // =============================================================================
 
-// Single buffer for now (double buffering needs too much RAM)
-#define RAW_BUFFER_WORDS 50000
+// Raw capture buffer - needs to hold full MVS frame
+// MVS: 264 lines × 384 pixels × 16 bits = ~254KB = ~64000 words
+#define RAW_BUFFER_WORDS 64000
 static uint32_t raw_buffer[RAW_BUFFER_WORDS];
-static uint8_t capture_buf_idx = 0;
 
-// Frame buffer for captured MVS frame (RGB565)
+// Single frame buffer (no double buffering to save RAM)
 static uint16_t mvs_frame[FRAME_WIDTH * MVS_HEIGHT];
 
 static int dma_chan;
 static volatile bool frame_ready = false;
 static volatile uint32_t frame_count = 0;
-static uint32_t capture_offset_lines = 16;  // Skip vertical blanking
+static uint32_t capture_offset_lines = 40;  // Skip vertical blanking (aggressive test)
 
 // =============================================================================
 // MVS Sync Detection
@@ -136,68 +136,72 @@ static bool wait_for_vsync_and_hsync(PIO pio, uint sm_sync, uint32_t timeout_ms)
     }
 }
 
-static bool wait_for_vsync_timeout(PIO pio, uint sm_sync, uint32_t timeout_ms) {
-    uint32_t equ_count = 0;
-    absolute_time_t timeout = make_timeout_time_ms(timeout_ms);
+// Non-blocking vsync check - call repeatedly, returns true when vsync detected
+static uint32_t vsync_short_count = 0;
 
-    while (true) {
-        if (absolute_time_diff_us(get_absolute_time(), timeout) <= 0) {
-            return false;
-        }
-
-        if (pio_sm_is_rx_fifo_empty(pio, sm_sync)) {
-            tight_loop_contents();
-            continue;
-        }
-
+static bool check_vsync_nonblocking(PIO pio, uint sm_sync) {
+    // Process all available sync pulses without blocking
+    while (!pio_sm_is_rx_fifo_empty(pio, sm_sync)) {
         uint32_t h_ctr = pio_sm_get(pio, sm_sync);
         bool is_short_pulse = (h_ctr <= H_THRESHOLD);
 
         if (is_short_pulse) {
-            equ_count++;
+            vsync_short_count++;
         } else {
-            if (equ_count >= 8) {
-                return true;
+            if (vsync_short_count >= 8) {
+                vsync_short_count = 0;
+                return true;  // Vsync detected!
             }
-            equ_count = 0;
+            vsync_short_count = 0;
         }
     }
+    return false;
 }
 
 // =============================================================================
 // Frame Processing
 // =============================================================================
 
-static void process_frame(uint32_t *raw_buf, uint16_t *frame_buf, uint32_t words_captured) {
-    uint32_t raw_bit_idx = capture_offset_lines * NEO_H_TOTAL * 16;
-    uint32_t out_idx = 0;
+// Helper to extract a pixel at a given bit index
+static inline uint16_t extract_pixel(uint32_t *raw_buf, uint32_t raw_bit_idx, uint32_t words_captured) {
+    uint32_t word_idx = raw_bit_idx / 32;
+    uint32_t bit_idx = raw_bit_idx % 32;
 
-    for (uint32_t line = 0; line < MVS_HEIGHT; line++) {
-        raw_bit_idx += NEO_H_ACTIVE_START * 16;
+    if (word_idx >= words_captured) return 0x07FF;  // CYAN for missing data
 
-        for (uint32_t x = 0; x < FRAME_WIDTH; x++) {
-            uint32_t word_idx = raw_bit_idx / 32;
-            uint32_t bit_idx = raw_bit_idx % 32;
+    uint32_t raw_val = raw_buf[word_idx] >> bit_idx;
+    if (bit_idx > 16 && (word_idx + 1) < words_captured) {
+        raw_val |= raw_buf[word_idx + 1] << (32 - bit_idx);
+    }
 
-            uint16_t pixel = 0;
-            if (word_idx < words_captured) {
-                uint32_t raw_val = raw_buf[word_idx] >> bit_idx;
-                if (bit_idx > 16 && (word_idx + 1) < words_captured) {
-                    raw_val |= raw_buf[word_idx + 1] << (32 - bit_idx);
-                }
+    uint8_t r5 = raw_val & 0x1F;
+    uint8_t b5 = (raw_val >> 5) & 0x1F;
+    uint8_t g5 = (raw_val >> 10) & 0x1F;
+    uint8_t g6 = (g5 << 1) | (g5 >> 4);
+    return (r5 << 11) | (g6 << 5) | b5;
+}
 
-                uint8_t r5 = raw_val & 0x1F;
-                uint8_t b5 = (raw_val >> 5) & 0x1F;
-                uint8_t g5 = (raw_val >> 10) & 0x1F;
-                uint8_t g6 = (g5 << 1) | (g5 >> 4);
-                pixel = (r5 << 11) | (g6 << 5) | b5;
-            }
+// Check if a pixel looks like blanking (mostly red or dark red)
+static inline bool is_blanking_pixel(uint16_t pixel) {
+    uint8_t r = (pixel >> 11) & 0x1F;
+    uint8_t g = (pixel >> 5) & 0x3F;
+    uint8_t b = pixel & 0x1F;
+    // Blanking is red-ish: red > green and red > blue significantly
+    return (r > 10 && r > g + 5 && r > b + 5);
+}
 
-            frame_buf[out_idx++] = pixel;
-            raw_bit_idx += 16;
-        }
+// Process ONE line from raw MVS buffer to frame buffer (for spread processing)
+static inline void process_mvs_line(uint32_t *raw_buf, uint16_t *frame_buf,
+                                     uint32_t line, uint32_t words_captured) {
+    // Calculate bit offset for this line (skip 20 vertical blanking lines)
+    uint32_t raw_bit_idx = (20 + line) * NEO_H_TOTAL * 16;
+    raw_bit_idx += NEO_H_ACTIVE_START * 16;  // Skip horizontal blanking
 
-        raw_bit_idx += (NEO_H_TOTAL - NEO_H_ACTIVE_START - FRAME_WIDTH) * 16;
+    uint16_t *dst = &frame_buf[line * FRAME_WIDTH];
+
+    for (uint32_t x = 0; x < FRAME_WIDTH; x++) {
+        dst[x] = extract_pixel(raw_buf, raw_bit_idx, words_captured);
+        raw_bit_idx += 16;
     }
 }
 
@@ -222,11 +226,15 @@ static void setup_dma(PIO pio, uint sm_pixel) {
 }
 
 // =============================================================================
-// DVI scanline buffers
+// DVI scanline buffers - use 4 buffers like sprite_bounce
 // =============================================================================
 
-static uint16_t scanline_buf[2][FRAME_WIDTH];
+#define N_SCANLINE_BUFFERS 4
+static uint16_t scanline_buf[N_SCANLINE_BUFFERS][FRAME_WIDTH];
 static uint8_t v_offset = (FRAME_HEIGHT - MVS_HEIGHT) / 2;
+
+// DVI line offset to compensate for timing
+#define DVI_LINE_OFFSET 8
 
 // =============================================================================
 // Core 1: DVI Output (TMDS encoding and serialization)
@@ -241,12 +249,34 @@ void core1_main() {
     __builtin_unreachable();
 }
 
-// Generate scanline from MVS frame buffer
+// Pattern offset for animation
+static int g_pattern_offset = 0;
+
+// Generate scanline from frame buffer
 static void generate_scanline(uint16_t *buf, uint y) {
     if (y < v_offset || y >= v_offset + MVS_HEIGHT) {
-        memset(buf, 0, FRAME_WIDTH * 2);
+        // MAGENTA for vertical border (centering 224 in 240)
+        for (uint x = 0; x < FRAME_WIDTH; x++) buf[x] = 0xF81F;
     } else {
-        memcpy(buf, &mvs_frame[(y - v_offset) * FRAME_WIDTH], FRAME_WIDTH * 2);
+        // Read from frame buffer
+        uint16_t *src = &mvs_frame[(y - v_offset) * FRAME_WIDTH];
+        for (uint x = 0; x < FRAME_WIDTH; x++) {
+            buf[x] = src[x];
+        }
+    }
+}
+
+// Update ONE line of frame buffer (called during scanline generation)
+static inline void update_frame_line(int line, int offset) {
+    uint16_t *dst = &mvs_frame[line * FRAME_WIDTH];
+    for (int x = 0; x < FRAME_WIDTH; x++) {
+        int shifted_x = (x + offset) % FRAME_WIDTH;
+        uint16_t color;
+        if (shifted_x < 80) color = 0x07E0;       // Green
+        else if (shifted_x < 160) color = 0x001F; // Blue
+        else if (shifted_x < 240) color = 0xFFE0; // Yellow
+        else color = 0x07FF;                       // Cyan
+        dst[x] = color;
     }
 }
 
@@ -285,93 +315,101 @@ int main() {
     dma_chan = dma_claim_unused_channel(true);
     setup_dma(pio_mvs, sm_pixel);
 
-    // Start with black frame
+    // Start with black frames
     memset(mvs_frame, 0, sizeof(mvs_frame));
-
-    // Pre-generate first scanline
-    generate_scanline(scanline_buf[0], 0);
+    memset(scanline_buf, 0, sizeof(scanline_buf));
+    memset(raw_buffer, 0, sizeof(raw_buffer));
 
     // Launch DVI on Core 1
     multicore_launch_core1(core1_main);
 
     printf("NeoPico-HD: Starting capture + DVI\n");
 
-    // Start capture
+    // Pre-fill free queue with scanline buffers (like sprite_bounce)
+    for (int i = 0; i < N_SCANLINE_BUFFERS; ++i) {
+        void *bufptr = &scanline_buf[i];
+        queue_add_blocking_u32(&dvi0.q_colour_free, &bufptr);
+    }
+
+    // Fill frame buffer with blue (initial state before capture)
+    for (int i = 0; i < FRAME_WIDTH * MVS_HEIGHT; i++) {
+        mvs_frame[i] = 0x001F;  // Blue
+    }
+
+    // Enable MVS sync detection
     pio_sm_set_enabled(pio_mvs, sm_sync, true);
-    dma_channel_set_write_addr(dma_chan, raw_buffer, false);
-    dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
-    pio_sm_set_enabled(pio_mvs, sm_pixel, true);
-    dma_channel_start(dma_chan);
-    pio_sm_exec(pio_mvs, sm_sync, pio_encode_irq_set(false, 4));
 
-    uint buf_idx = 0;
-    uint32_t words_captured = 0;
-
-    // VSYNC detection state
-    uint32_t short_count = 0;
-    bool in_vsync = false;
-    bool frame_captured = false;
+    // Capture state machine
+    enum { WAIT_VSYNC, WAIT_HSYNC, CAPTURING, PROCESSING } capture_state = WAIT_VSYNC;
+    static uint32_t dvi_frames = 0;
+    static uint32_t words_captured = 0;
 
     while (true) {
-        static uint32_t dvi_frames = 0;
         dvi_frames++;
         gpio_put(PICO_DEFAULT_LED_PIN, (dvi_frames / 30) & 1);
 
-        // Generate DVI frame while capturing MVS
+        // Non-blocking capture state machine
+        switch (capture_state) {
+        case WAIT_VSYNC:
+            if (check_vsync_nonblocking(pio_mvs, sm_sync)) {
+                // Vsync detected - now wait for first hsync
+                drain_sync_fifo(pio_mvs, sm_sync);
+                capture_state = WAIT_HSYNC;
+            }
+            break;
+
+        case WAIT_HSYNC:
+            // Wait for first normal hsync (long pulse) after vsync
+            if (!pio_sm_is_rx_fifo_empty(pio_mvs, sm_sync)) {
+                uint32_t h_ctr = pio_sm_get(pio_mvs, sm_sync);
+                if (h_ctr > H_THRESHOLD) {
+                    // Normal hsync - start capture NOW
+                    dma_channel_set_write_addr(dma_chan, raw_buffer, false);
+                    dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
+                    pio_sm_set_enabled(pio_mvs, sm_pixel, true);
+                    dma_channel_start(dma_chan);
+                    pio_sm_exec(pio_mvs, sm_sync, pio_encode_irq_set(false, 4));
+                    capture_state = CAPTURING;
+                }
+            }
+            break;
+
+        case CAPTURING:
+            if (!dma_channel_is_busy(dma_chan)) {
+                words_captured = RAW_BUFFER_WORDS - dma_channel_hw_addr(dma_chan)->transfer_count;
+                pio_sm_set_enabled(pio_mvs, sm_pixel, false);
+                capture_state = PROCESSING;
+            }
+            break;
+
+        case PROCESSING:
+            // Processing happens during DVI scanline generation below
+            break;
+        }
+
+        // Generate DVI frame + process MVS data line-by-line
         for (uint y = 0; y < FRAME_HEIGHT; ++y) {
-            const uint16_t *scanline = scanline_buf[buf_idx];
-            queue_add_blocking_u32(&dvi0.q_colour_valid, &scanline);
+            uint adjusted_y = (y + FRAME_HEIGHT - DVI_LINE_OFFSET) % FRAME_HEIGHT;
 
-            buf_idx ^= 1;
-            generate_scanline(scanline_buf[buf_idx], (y + 1) % FRAME_HEIGHT);
+            // Get free buffer from queue
+            uint16_t *pixbuf;
+            queue_remove_blocking_u32(&dvi0.q_colour_free, &pixbuf);
 
-            while (queue_try_remove_u32(&dvi0.q_colour_free, &scanline))
-                ;
+            // Fill from frame buffer
+            generate_scanline(pixbuf, adjusted_y);
 
-            // Non-blocking VSYNC detection
-            while (!pio_sm_is_rx_fifo_empty(pio_mvs, sm_sync)) {
-                uint32_t h = pio_sm_get(pio_mvs, sm_sync);
-                bool is_short = (h <= H_THRESHOLD);
+            // Queue for display
+            queue_add_blocking_u32(&dvi0.q_colour_valid, &pixbuf);
 
-                if (!in_vsync) {
-                    if (is_short) short_count++;
-                    else {
-                        if (short_count >= 8) in_vsync = true;
-                        short_count = 0;
-                    }
-                } else {
-                    if (is_short) short_count++;
-                    else {
-                        // VSYNC complete!
-                        in_vsync = false;
-                        short_count = 0;
-
-                        // Stop and restart capture
-                        dma_channel_abort(dma_chan);
-                        words_captured = RAW_BUFFER_WORDS - dma_channel_hw_addr(dma_chan)->transfer_count;
-                        frame_captured = true;
-
-                        // Restart
-                        dma_channel_set_write_addr(dma_chan, raw_buffer, false);
-                        dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
-                        pio_sm_set_enabled(pio_mvs, sm_pixel, false);
-                        pio_sm_clear_fifos(pio_mvs, sm_pixel);
-                        pio_sm_restart(pio_mvs, sm_pixel);
-                        pio_sm_exec(pio_mvs, sm_pixel, pio_encode_jmp(offset_pixel));
-                        pio_sm_set_enabled(pio_mvs, sm_pixel, true);
-                        dma_channel_start(dma_chan);
-                        pio_sm_exec(pio_mvs, sm_sync, pio_encode_irq_set(false, 4));
-                    }
+            // Process ONE line of MVS data per scanline (spread the work)
+            if (capture_state == PROCESSING && y < MVS_HEIGHT) {
+                process_mvs_line(raw_buffer, mvs_frame, y, words_captured);
+                if (y == MVS_HEIGHT - 1) {
+                    capture_state = WAIT_VSYNC;  // Done processing, ready for next capture
                 }
             }
         }
 
-        // Process frame after DVI scanlines done
-        if (frame_captured && words_captured > 10000) {
-            process_frame(raw_buffer, mvs_frame, words_captured);
-            frame_count++;
-            frame_captured = false;
-        }
     }
 
     return 0;

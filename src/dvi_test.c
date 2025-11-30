@@ -89,12 +89,45 @@ static const uint16_t color_bars[] = {
 #define NUM_BARS (sizeof(color_bars) / sizeof(color_bars[0]))
 #define BAR_WIDTH (FRAME_WIDTH / NUM_BARS)
 
-static void generate_color_bar_line(uint16_t *buf, uint y) {
-    (void)y;  // Same pattern for all lines
+// Moving box state
+static int box_x = 50, box_y = 50;
+static int box_dx = 2, box_dy = 1;
+#define BOX_SIZE 40
+
+// Line number display for debugging vertical position
+static void generate_moving_box_line(uint16_t *buf, uint y, uint frame) {
+    // Update box position once per frame at line 0
+    if (y == 0) {
+        box_x += box_dx;
+        box_y += box_dy;
+        if (box_x <= 0 || box_x >= FRAME_WIDTH - BOX_SIZE) box_dx = -box_dx;
+        if (box_y <= 0 || box_y >= FRAME_HEIGHT - BOX_SIZE) box_dy = -box_dy;
+    }
+
     for (uint x = 0; x < FRAME_WIDTH; x++) {
-        uint bar_idx = x / BAR_WIDTH;
-        if (bar_idx >= NUM_BARS) bar_idx = NUM_BARS - 1;
-        buf[x] = color_bars[bar_idx];
+        // First 4 lines: bright colors to see where they appear
+        if (y < 4) {
+            buf[x] = (y == 0) ? COLOR_RED : (y == 1) ? COLOR_GREEN : (y == 2) ? COLOR_BLUE : COLOR_YELLOW;
+            continue;
+        }
+        // Last 4 lines: different colors
+        if (y >= FRAME_HEIGHT - 4) {
+            buf[x] = (y == FRAME_HEIGHT-4) ? COLOR_CYAN : (y == FRAME_HEIGHT-3) ? COLOR_MAGENTA :
+                     (y == FRAME_HEIGHT-2) ? COLOR_WHITE : 0xF800;
+            continue;
+        }
+
+        // Checkerboard background
+        uint checker = ((x / 20) + (y / 20) + (frame / 30)) % 2;
+        uint16_t bg = checker ? 0x4208 : 0x2104;
+
+        // Bouncing white box
+        if (x >= box_x && x < box_x + BOX_SIZE &&
+            y >= box_y && y < box_y + BOX_SIZE) {
+            buf[x] = COLOR_WHITE;
+        } else {
+            buf[x] = bg;
+        }
     }
 }
 
@@ -142,34 +175,42 @@ int main() {
     // Launch DVI on core 1
     multicore_launch_core1(core1_main);
 
-    printf("DVI initialized, outputting color bars...\n");
+    printf("DVI initialized, outputting moving box test...\n");
 
-    // Pre-generate first scanline
-    generate_color_bar_line(scanline_buf[0], 0);
+    static uint frame_num = 0;
+
+    // Offset to compensate for DVI timing - adjust this value
+    // Negative offset: subtract to shift content UP on screen
+    #define DVI_LINE_OFFSET 8
 
     // Main loop - feed scanlines to DVI
     uint buf_idx = 0;
     while (true) {
         for (uint y = 0; y < FRAME_HEIGHT; ++y) {
+            // Adjust y coordinate by offset (wrap around) - SUBTRACT to shift up
+            uint adjusted_y = (y + FRAME_HEIGHT - DVI_LINE_OFFSET) % FRAME_HEIGHT;
+
+            // Generate line with adjusted coordinate
+            generate_moving_box_line(scanline_buf[buf_idx], adjusted_y, frame_num);
+
             // Get pointer to current scanline buffer
             const uint16_t *scanline = scanline_buf[buf_idx];
 
             // Queue this scanline for display
             queue_add_blocking_u32(&dvi0.q_colour_valid, &scanline);
 
-            // Switch to other buffer and generate next line
+            // Switch to other buffer
             buf_idx ^= 1;
-            generate_color_bar_line(scanline_buf[buf_idx], (y + 1) % FRAME_HEIGHT);
 
             // Discard any returned buffers
             while (queue_try_remove_u32(&dvi0.q_colour_free, &scanline))
                 ;
         }
 
-        // Toggle LED each frame
-        static uint frame_count = 0;
-        if (++frame_count >= 60) {
-            frame_count = 0;
+        frame_num++;
+
+        // Toggle LED each second
+        if ((frame_num % 60) == 0) {
             gpio_xor_mask(1u << PICO_DEFAULT_LED_PIN);
         }
     }
