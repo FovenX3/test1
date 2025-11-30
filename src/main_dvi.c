@@ -1,10 +1,10 @@
 /**
  * NeoPico-HD - MVS Capture with DVI Output
  *
- * Simplified approach inspired by PicoDVI-N64:
- * - Single framebuffer (accepts tearing)
- * - Scanline callback for DVI output (runs independently)
- * - Capture loop writes directly to framebuffer
+ * Line-by-line capture for 60fps:
+ * - No DMA, no raw buffer
+ * - Read pixels directly from PIO FIFO
+ * - Convert and write to framebuffer per-line
  *
  * Pin Configuration:
  *   MVS RGB Data:  GPIO 0-14 (15 bits)
@@ -21,7 +21,6 @@
 #include "pico/multicore.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
-#include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/vreg.h"
 #include "hardware/sync.h"
@@ -85,28 +84,23 @@ struct dvi_inst dvi0;
 
 #define H_THRESHOLD 288      // NEO_H_TOTAL/2 + NEO_H_TOTAL/4
 #define NEO_H_TOTAL 384
-#define NEO_H_SYNCLEN 29
-#define NEO_H_BACKPORCH 28
 #define NEO_H_ACTIVE 320
-#define NEO_H_ACTIVE_START 27  // Tuned for correct horizontal position
 
-#define NEO_V_TOTAL 264
-#define NEO_V_SYNCLEN 3
-#define NEO_V_BACKPORCH 21
+// Even number for clean word-aligned processing (2 pixels per word)
+#define H_SKIP_START 28      // Pixels to skip at line start (blanking)
+#define H_SKIP_END   36      // Pixels to skip at line end (384 - 28 - 320 = 36)
+
+// Vertical blanking - lines to skip after vsync before active video
+#define V_SKIP_LINES 16
+
 #define NEO_V_ACTIVE 224
 
 // =============================================================================
-// Buffers - Single framebuffer (accepts tearing)
+// Buffers - Single framebuffer only (no raw buffer needed!)
 // =============================================================================
 
-// Single raw capture buffer - simpler, 30fps but stable
-#define RAW_BUFFER_WORDS 48000
-static uint32_t raw_buffer[RAW_BUFFER_WORDS];
-
-// Single frame buffer - DVI reads while capture writes (tearing OK)
 static uint16_t g_framebuf[FRAME_WIDTH * FRAME_HEIGHT];
 
-static int dma_chan;
 static volatile uint32_t frame_count = 0;
 
 // Vertical offset for centering MVS 224 lines in 240 line frame
@@ -194,75 +188,32 @@ static bool wait_for_vsync(PIO pio, uint sm_sync, uint32_t timeout_ms) {
 }
 
 // =============================================================================
-// Frame Processing - extract pixels from raw capture buffer
+// Inline pixel conversion - MVS RGB555 to RGB565
 // =============================================================================
 
-static inline uint16_t extract_pixel(uint32_t *raw_buf, uint32_t raw_bit_idx, uint32_t words_captured) {
-    uint32_t word_idx = raw_bit_idx / 32;
-    uint32_t bit_idx = raw_bit_idx % 32;
+static inline void convert_and_store_pixels(uint32_t word, uint16_t *dst) {
+    // Each word contains 2 pixels (16 bits each)
+    // MVS format per pixel: R5 (bits 0-4), B5 (bits 5-9), G5 (bits 10-14), dummy (bit 15)
 
-    if (word_idx >= words_captured) return 0x0000;  // Black for missing data
+    // Pixel 0 (low 16 bits)
+    uint16_t p0 = word & 0xFFFF;
+    uint8_t r0 = p0 & 0x1F;
+    uint8_t b0 = (p0 >> 5) & 0x1F;
+    uint8_t g0 = (p0 >> 10) & 0x1F;
+    uint8_t g0_6 = (g0 << 1) | (g0 >> 4);  // 5-bit to 6-bit green
+    dst[0] = (r0 << 11) | (g0_6 << 5) | b0;
 
-    uint32_t raw_val = raw_buf[word_idx] >> bit_idx;
-    if (bit_idx > 16 && (word_idx + 1) < words_captured) {
-        raw_val |= raw_buf[word_idx + 1] << (32 - bit_idx);
-    }
-
-    // MVS format: bits 0-4=R, 5-9=B, 10-14=G
-    uint8_t r5 = raw_val & 0x1F;
-    uint8_t b5 = (raw_val >> 5) & 0x1F;
-    uint8_t g5 = (raw_val >> 10) & 0x1F;
-    uint8_t g6 = (g5 << 1) | (g5 >> 4);  // Expand 5-bit to 6-bit
-    return (r5 << 11) | (g6 << 5) | b5;  // RGB565
-}
-
-// Process entire frame from raw buffer to framebuffer
-static void process_frame(uint32_t *raw_buf, uint32_t words_captured) {
-    // Skip some lines at top (vertical blanking offset)
-    // With 46000 words = ~239 lines, offset 16 gives 223 active lines
-    const uint32_t v_blanking_offset = 16;
-
-    // Calculate max safe lines based on buffer size
-    uint32_t max_lines = (words_captured * 32) / (NEO_H_TOTAL * 16);
-    uint32_t safe_lines = (max_lines > v_blanking_offset) ? (max_lines - v_blanking_offset) : 0;
-    if (safe_lines > MVS_HEIGHT) safe_lines = MVS_HEIGHT;
-
-    for (uint32_t line = 0; line < safe_lines; line++) {
-        uint32_t raw_bit_idx = (v_blanking_offset + line) * NEO_H_TOTAL * 16;
-        raw_bit_idx += NEO_H_ACTIVE_START * 16;  // Skip h blanking
-
-        // Write to framebuffer with vertical centering
-        uint16_t *dst = &g_framebuf[(v_offset + line) * FRAME_WIDTH];
-
-        for (uint32_t x = 0; x < FRAME_WIDTH; x++) {
-            dst[x] = extract_pixel(raw_buf, raw_bit_idx, words_captured);
-            raw_bit_idx += 16;
-        }
-    }
+    // Pixel 1 (high 16 bits)
+    uint16_t p1 = word >> 16;
+    uint8_t r1 = p1 & 0x1F;
+    uint8_t b1 = (p1 >> 5) & 0x1F;
+    uint8_t g1 = (p1 >> 10) & 0x1F;
+    uint8_t g1_6 = (g1 << 1) | (g1 >> 4);
+    dst[1] = (r1 << 11) | (g1_6 << 5) | b1;
 }
 
 // =============================================================================
-// DMA Setup
-// =============================================================================
-
-static void setup_dma(PIO pio, uint sm_pixel) {
-    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
-    channel_config_set_read_increment(&cfg, false);
-    channel_config_set_write_increment(&cfg, true);
-    channel_config_set_dreq(&cfg, pio_get_dreq(pio, sm_pixel, false));
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
-
-    dma_channel_configure(
-        dma_chan,
-        &cfg,
-        raw_buffer,
-        &pio->rxf[sm_pixel],
-        RAW_BUFFER_WORDS,
-        false);
-}
-
-// =============================================================================
-// Main - Core 0: MVS Capture (runs independently of DVI)
+// Main - Core 0: Line-by-line MVS Capture
 // =============================================================================
 
 int main() {
@@ -276,7 +227,7 @@ int main() {
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
-    printf("NeoPico-HD: MVS Capture + DVI Output (N64-style)\n");
+    printf("NeoPico-HD: MVS Capture + DVI Output (Line-by-line 60fps)\n");
 
     // Initialize framebuffer to black
     memset(g_framebuf, 0, sizeof(g_framebuf));
@@ -307,19 +258,22 @@ int main() {
     uint sm_pixel = pio_claim_unused_sm(pio_mvs, true);
     mvs_pixel_capture_program_init(pio_mvs, sm_pixel, offset_pixel, PIN_R0, PIN_GND, PIN_CSYNC, PIN_PCLK);
 
-    dma_chan = dma_claim_unused_channel(true);
-    setup_dma(pio_mvs, sm_pixel);
-
     // Enable sync detection
     pio_sm_set_enabled(pio_mvs, sm_sync, true);
 
-    printf("Starting capture loop\n");
+    printf("Starting line-by-line capture loop\n");
 
     // Frame rate measurement
     uint32_t last_time = time_us_32();
     uint32_t fps_frame_count = 0;
 
-    // Main capture loop - completely independent of DVI timing
+    // Pre-calculate skip counts (in words, 2 pixels per word)
+    const int skip_start_words = H_SKIP_START / 2;   // 14 words
+    const int active_words = FRAME_WIDTH / 2;         // 160 words
+    const int skip_end_words = H_SKIP_END / 2;        // 18 words
+    const int line_words = NEO_H_TOTAL / 2;           // 192 words total
+
+    // Main capture loop
     while (true) {
         frame_count++;
         fps_frame_count++;
@@ -338,7 +292,7 @@ int main() {
             continue;  // Timeout, try again
         }
 
-        // 2. Drain sync FIFO to clear any buffered pulses
+        // 2. Drain sync FIFO
         drain_sync_fifo(pio_mvs, sm_sync);
 
         // 3. Start pixel capture
@@ -352,17 +306,36 @@ int main() {
         pio_interrupt_clear(pio_mvs, 4);
         pio_sm_exec(pio_mvs, sm_sync, pio_encode_irq_set(false, 4));
 
-        // 4. Start DMA transfer
-        dma_channel_set_write_addr(dma_chan, raw_buffer, false);
-        dma_channel_set_trans_count(dma_chan, RAW_BUFFER_WORDS, false);
-        dma_channel_start(dma_chan);
+        // 4. Skip vertical blanking lines
+        for (int skip_line = 0; skip_line < V_SKIP_LINES; skip_line++) {
+            for (int i = 0; i < line_words; i++) {
+                pio_sm_get_blocking(pio_mvs, sm_pixel);
+            }
+        }
 
-        // 5. Wait for DMA to complete
-        dma_channel_wait_for_finish_blocking(dma_chan);
+        // 5. Capture active lines
+        for (int line = 0; line < MVS_HEIGHT; line++) {
+            uint16_t *dst = &g_framebuf[(v_offset + line) * FRAME_WIDTH];
+
+            // Skip horizontal blanking at start
+            for (int i = 0; i < skip_start_words; i++) {
+                pio_sm_get_blocking(pio_mvs, sm_pixel);
+            }
+
+            // Read and convert active pixels
+            for (int x = 0; x < FRAME_WIDTH; x += 2) {
+                uint32_t word = pio_sm_get_blocking(pio_mvs, sm_pixel);
+                convert_and_store_pixels(word, &dst[x]);
+            }
+
+            // Skip horizontal blanking at end
+            for (int i = 0; i < skip_end_words; i++) {
+                pio_sm_get_blocking(pio_mvs, sm_pixel);
+            }
+        }
+
+        // 6. Disable pixel capture until next frame
         pio_sm_set_enabled(pio_mvs, sm_pixel, false);
-
-        // 6. Process frame (this takes ~16ms, so we run at ~30fps)
-        process_frame(raw_buffer, RAW_BUFFER_WORDS);
     }
 
     return 0;
