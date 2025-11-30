@@ -52,10 +52,30 @@ static const struct dvi_serialiser_cfg neopico_dvi_cfg = {
 };
 
 #define FRAME_WIDTH 320
-#define FRAME_HEIGHT 240  // DVI expects 240 lines
+#define FRAME_HEIGHT 240  // Native 240p output
 #define MVS_HEIGHT 224
 #define VREG_VSEL VREG_VOLTAGE_1_20
-#define DVI_TIMING dvi_timing_640x480p_60hz
+
+// Custom 240p timing (640x240 @ 60Hz)
+// Half the pixel clock of 480p for true 60Hz refresh
+// Total: 262 lines, 12.6 MHz pixel clock
+static const struct dvi_timing dvi_timing_640x240p_60hz = {
+    .h_sync_polarity   = false,
+    .h_front_porch     = 16,
+    .h_sync_width      = 96,
+    .h_back_porch      = 48,
+    .h_active_pixels   = 640,
+
+    .v_sync_polarity   = false,
+    .v_front_porch     = 3,
+    .v_sync_width      = 3,
+    .v_back_porch      = 16,
+    .v_active_lines    = 240,
+
+    .bit_clk_khz       = 126000  // Half of 252000 for 60Hz
+};
+
+#define DVI_TIMING dvi_timing_640x240p_60hz
 
 struct dvi_inst dvi0;
 

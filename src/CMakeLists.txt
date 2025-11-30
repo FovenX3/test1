@@ -95,6 +95,11 @@ target_link_libraries(main_dvi
     libdvi
 )
 
+# Disable line doubling for 240p output
+target_compile_definitions(main_dvi PRIVATE
+    DVI_VERTICAL_REPEAT=1
+)
+
 # Enable USB for debug output
 pico_enable_stdio_usb(main_dvi 1)
 pico_enable_stdio_uart(main_dvi 0)
