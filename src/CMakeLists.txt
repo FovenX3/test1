@@ -80,6 +80,24 @@ pico_enable_stdio_uart(gpio_test 0)
 pico_add_extra_outputs(gpio_test)
 
 # =============================================================================
+# Audio Test (ADC capture + USB streaming)
+# =============================================================================
+add_executable(audio_test
+    audio_test.c
+)
+
+target_link_libraries(audio_test
+    pico_stdlib
+    hardware_adc
+    hardware_dma
+    hardware_irq
+)
+
+pico_enable_stdio_usb(audio_test 1)
+pico_enable_stdio_uart(audio_test 0)
+pico_add_extra_outputs(audio_test)
+
+# =============================================================================
 # DVI Test application (color bars)
 # =============================================================================
 add_executable(dvi_test
