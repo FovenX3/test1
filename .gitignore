@@ -17,3 +17,5 @@ screenlog.*
 *.swp
 *.swo
 *~
+*.wav
+*.png

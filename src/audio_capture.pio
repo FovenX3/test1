@@ -1,8 +1,8 @@
 ;
 ; YM2610 Audio Capture PIO Program
 ;
-; Captures 48-bit stereo frames (24 bits per channel)
-; Shifts in data on BCK rising edge, syncs on WS falling edge
+; Captures 24 bits per channel, full frame
+; Try WS rising edge = start of left channel
 ;
 ; Uses absolute GPIO numbers for non-consecutive pins
 ; IN base = DAT pin for shifting data
@@ -16,10 +16,10 @@
 
 .wrap_target
 wait_frame:
-    wait 1 gpio 9       ; Wait for WS high (GPIO 9)
-    wait 0 gpio 9       ; Wait for WS falling edge
+    wait 0 gpio 9       ; Wait for WS low (GPIO 9)
+    wait 1 gpio 9       ; Wait for WS rising edge = left channel start
 
-    ; Capture left channel - all 24 bits (push as 32-bit with 8 zeros)
+    ; Capture left channel - 24 bits
     set x, 23
 left_loop:
     wait 0 gpio 23      ; Wait for BCK low (GPIO 23)
@@ -27,9 +27,9 @@ left_loop:
     in pins, 1          ; Shift in DAT (GPIO 3)
     jmp x-- left_loop
 
-    push noblock        ; Push 24 bits (left-aligned in 32-bit word)
+    push noblock
 
-    ; Capture right channel - all 24 bits
+    ; Capture right channel - 24 bits
     set x, 23
 right_loop:
     wait 0 gpio 23

@@ -75,9 +75,9 @@ int main() {
 
         setup_dma_32(audio_buffer[active_buffer], BUFFER_SAMPLES * 2);
 
-        // Convert 24-bit to 16-bit: take bits 23-8 (upper 16 of 24)
+        // 24 bits in bits 23-0, take upper 16 bits (bits 23-8)
         for (int i = 0; i < BUFFER_SAMPLES * 2; i++) {
-            stream_buf[i] = (int16_t)((audio_buffer[completed][i] >> 8) & 0xFFFF);
+            stream_buf[i] = (int16_t)(audio_buffer[completed][i] >> 8);
         }
 
         fwrite(stream_buf, sizeof(int16_t), BUFFER_SAMPLES * 2, stdout);
