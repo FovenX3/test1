@@ -27,17 +27,26 @@ static const uint8_t green_reverse_lut[32] = {
 // =============================================================================
 // DVI Pin Configuration
 // =============================================================================
-// GPIO 25-26: DVI Clock (CLKN/CLKP)
-// GPIO 27-28: DVI D0 (D0N/D0P)
-// GPIO 29-30: DVI D1 (D1N/D1P)
-// GPIO 31-32: DVI D2 (D2N/D2P)
+// GPIO 25-26: DVI D0 (D0N/D0P)
+// GPIO 27-28: DVI D1 (D1N/D1P)
+// GPIO 29-30: DVI D2 (D2N/D2P)
+// GPIO 31-32: DVI Clock (CLKN/CLKP)
+//
+// Requirements:
+//   - Call neopico_dvi_gpio_setup() before dvi_init()
+//   - Add DVI_USE_PIO_CLOCK=1 compile flag
 
 static const struct dvi_serialiser_cfg neopico_dvi_cfg = {
     .pio = pio0,
     .sm_tmds = {0, 1, 2},
-    .pins_tmds = {27, 29, 31},   // D0=GP27-28, D1=GP29-30, D2=GP31-32
-    .pins_clk = 25,              // Clock=GP25-26
-    .invert_diffpairs = true
+    .pins_tmds = {25, 27, 29},   // D0=GP25-26, D1=GP27-28, D2=GP29-30
+    .pins_clk = 31,              // Clock=GP31-32
+    .invert_diffpairs = true     // GP(n)=-, GP(n+1)=+
 };
+
+// Call before dvi_init() to enable GP32 access
+static inline void neopico_dvi_gpio_setup(void) {
+    pio_set_gpio_base(pio0, 16);
+}
 
 #endif // NEOPICO_CONFIG_H

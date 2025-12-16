@@ -26,9 +26,10 @@ target_link_libraries(neopico_hd
     libdvi
 )
 
-# Disable line doubling for 240p output
+# DVI config: 240p output, PIO clock for odd-numbered clock pin
 target_compile_definitions(neopico_hd PRIVATE
     DVI_VERTICAL_REPEAT=1
+    DVI_USE_PIO_CLOCK=1
 )
 
 # Enable USB for debug output
@@ -118,6 +119,9 @@ target_link_libraries(dvi_test
     libdvi
 )
 
+# PIO clock for odd-numbered clock pin
+target_compile_definitions(dvi_test PRIVATE DVI_USE_PIO_CLOCK=1)
+
 # Enable USB for debug output
 pico_enable_stdio_usb(dvi_test 1)
 pico_enable_stdio_uart(dvi_test 0)
@@ -144,6 +148,8 @@ target_link_libraries(hdmi_audio_test
     libdvi
 )
 
+target_compile_definitions(hdmi_audio_test PRIVATE DVI_USE_PIO_CLOCK=1)
+
 pico_enable_stdio_usb(hdmi_audio_test 1)
 pico_enable_stdio_uart(hdmi_audio_test 0)
 pico_add_extra_outputs(hdmi_audio_test)
@@ -167,6 +173,8 @@ target_link_libraries(hdmi_adc_audio_test
     hardware_adc
     libdvi
 )
+
+target_compile_definitions(hdmi_adc_audio_test PRIVATE DVI_USE_PIO_CLOCK=1)
 
 pico_enable_stdio_usb(hdmi_adc_audio_test 1)
 pico_enable_stdio_uart(hdmi_adc_audio_test 0)
@@ -194,6 +202,8 @@ target_link_libraries(hdmi_i2s_audio_test
     hardware_dma
     libdvi
 )
+
+target_compile_definitions(hdmi_i2s_audio_test PRIVATE DVI_USE_PIO_CLOCK=1)
 
 pico_enable_stdio_usb(hdmi_i2s_audio_test 1)
 pico_enable_stdio_uart(hdmi_i2s_audio_test 0)
@@ -258,6 +268,8 @@ target_link_libraries(ym2610_hdmi_audio
     hardware_pio
     libdvi
 )
+
+target_compile_definitions(ym2610_hdmi_audio PRIVATE DVI_USE_PIO_CLOCK=1)
 
 pico_enable_stdio_usb(ym2610_hdmi_audio 1)
 pico_enable_stdio_uart(ym2610_hdmi_audio 0)
