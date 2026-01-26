@@ -1,21 +1,24 @@
 #include "osd.h"
-#include "font_8x8.h"
+
 #include <string.h>
+
+#include "font_8x8.h"
 
 // OSD state
 volatile bool osd_visible = false;
 
 // Pre-rendered RGB565 framebuffer for OSD box
 // Aligned for efficient 32-bit access
-uint16_t __attribute__((aligned(4)))
-    osd_framebuffer[OSD_BOX_H][OSD_BOX_W];
+uint16_t __attribute__((aligned(4))) osd_framebuffer[OSD_BOX_H][OSD_BOX_W];
 
-void osd_init(void) {
+void osd_init(void)
+{
     osd_clear();
     osd_visible = false;
 }
 
-void osd_clear(void) {
+void osd_clear(void)
+{
     // Fill with background color using 32-bit writes
     uint32_t bg32 = OSD_COLOR_BG | (OSD_COLOR_BG << 16);
     uint32_t *dst = (uint32_t *)osd_framebuffer;
@@ -26,7 +29,8 @@ void osd_clear(void) {
     }
 }
 
-void osd_putchar(int x, int y, char c) {
+void osd_putchar(int x, int y, char c)
+{
     // Bounds check
     if (x < 0 || x + 8 > OSD_BOX_W || y < 0 || y + 8 > OSD_BOX_H)
         return;
@@ -55,7 +59,8 @@ void osd_putchar(int x, int y, char c) {
     }
 }
 
-void osd_puts(int x, int y, const char *str) {
+void osd_puts(int x, int y, const char *str)
+{
     while (*str) {
         osd_putchar(x, y, *str++);
         x += 8;

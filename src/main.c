@@ -4,20 +4,24 @@
  * Streaming architecture: line ring buffer between Core 0 (capture) and Core 1 (output)
  */
 
-#include "audio_subsystem.h"
-#include "hardware/clocks.h"
-#include "mvs_pins.h"
-#include "osd/osd.h"
-#include "pico/multicore.h"
-#include "pico/stdlib.h"
 #include "pico_hdmi/hstx_data_island_queue.h"
 #include "pico_hdmi/video_output.h"
+
+#include "pico/multicore.h"
+#include "pico/stdlib.h"
+
+#include "hardware/clocks.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "audio_subsystem.h"
+#include "mvs_pins.h"
+#include "osd/osd.h"
 #include "video/line_ring.h"
 #include "video/video_config.h"
 #include "video/video_pipeline.h"
 #include "video_capture.h"
-#include <stdio.h>
-#include <string.h>
 
 // Line ring buffer (shared between Core 0 and Core 1)
 line_ring_t g_line_ring __attribute__((aligned(64)));
@@ -29,7 +33,8 @@ line_ring_t g_line_ring __attribute__((aligned(64)));
 /**
  * VSYNC callback - called once per frame to sync input/output buffers
  */
-void __scratch_x("") mvs_vsync_callback(void) {
+void __scratch_x("") mvs_vsync_callback(void)
+{
     line_ring_output_vsync();
 }
 
@@ -37,8 +42,8 @@ void __scratch_x("") mvs_vsync_callback(void) {
  * Fast 2x pixel doubling: reads 2 pixels, writes 2 doubled words
  * Processes 32-bits at a time for efficiency
  */
-static inline void __scratch_x("")
-double_pixels_fast(uint32_t *dst, const uint16_t *src, int count) {
+static inline void __scratch_x("") double_pixels_fast(uint32_t *dst, const uint16_t *src, int count)
+{
     const uint32_t *src32 = (const uint32_t *)src;
     int pairs = count / 2;
 
@@ -47,7 +52,7 @@ double_pixels_fast(uint32_t *dst, const uint16_t *src, int count) {
         uint32_t p0 = two & 0xFFFF;
         uint32_t p1 = two >> 16;
         dst[i * 2] = p0 | (p0 << 16);
-        dst[i * 2 + 1] = p1 | (p1 << 16);
+        dst[(i * 2) + 1] = p1 | (p1 << 16);
     }
 }
 
@@ -58,7 +63,8 @@ double_pixels_fast(uint32_t *dst, const uint16_t *src, int count) {
  *
  * OSD rendering uses loop splitting - no per-pixel branching
  */
-void __scratch_x("") mvs_scanline_doubler(uint32_t v_scanline, uint32_t active_line, uint32_t *dst) {
+void __scratch_x("") mvs_scanline_doubler(uint32_t v_scanline, uint32_t active_line, uint32_t *dst)
+{
     // 2x Vertical Scaling: Every 240p line is shown twice to reach 480p
     uint32_t fb_line = active_line / 2;
 
@@ -103,9 +109,8 @@ void __scratch_x("") mvs_scanline_doubler(uint32_t v_scanline, uint32_t active_l
         double_pixels_fast(dst + OSD_BOX_X, osd_src, OSD_BOX_W);
 
         // Region 3: After OSD box (OSD_BOX_X + OSD_BOX_W to LINE_WIDTH)
-        double_pixels_fast(dst + OSD_BOX_X + OSD_BOX_W,
-                          src + OSD_BOX_X + OSD_BOX_W,
-                          LINE_WIDTH - OSD_BOX_X - OSD_BOX_W);
+        double_pixels_fast(dst + OSD_BOX_X + OSD_BOX_W, src + OSD_BOX_X + OSD_BOX_W,
+                           LINE_WIDTH - OSD_BOX_X - OSD_BOX_W);
     } else {
         // Fast path: no OSD on this line, full video doubling
         if (use_scanlines) {
@@ -120,7 +125,8 @@ void __scratch_x("") mvs_scanline_doubler(uint32_t v_scanline, uint32_t active_l
 // Main (Core 0)
 // ============================================================================
 
-int main(void) {
+int main(void)
+{
     // Set system clock to 126 MHz for HSTX timing
     set_sys_clock_khz(126000, true);
 

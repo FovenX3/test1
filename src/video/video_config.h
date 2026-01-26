@@ -2,7 +2,7 @@
 #define VIDEO_CONFIG_H
 
 // Framebuffer dimensions (DVI output resolution, 2x scaled to 640x480)
-#define FRAME_WIDTH  320
+#define FRAME_WIDTH 320
 #define FRAME_HEIGHT 240
 
 // MVS active video area

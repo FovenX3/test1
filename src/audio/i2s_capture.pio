@@ -43,7 +43,7 @@ left_loop:
 static inline void i2s_capture_program_init(PIO pio, uint sm, uint offset, uint pin_dat, uint pin_ws, uint pin_bck) {
     pio_sm_config c = i2s_capture_program_get_default_config(offset);
 
-    // Set IN pin base to DAT. 
+    // Set IN pin base to DAT.
     // The PIO code expects WS at +1 and BCK at +2 from in_base.
     sm_config_set_in_pins(&c, pin_dat);
 

@@ -10,16 +10,16 @@
 #ifndef AUDIO_PIPELINE_H
 #define AUDIO_PIPELINE_H
 
-#include "audio_common.h"
 #include "audio_buffer.h"
-#include "i2s_capture.h"
+#include "audio_common.h"
 #include "dc_filter.h"
+#include "i2s_capture.h"
 #include "lowpass.h"
 #include "src.h"
 
 // Button pins (using freed Bank 0 pins - old audio pins)
-#define AUDIO_BTN1_PIN 21  // DC filter toggle (was BCK)
-#define AUDIO_BTN2_PIN 23  // SRC mode cycle (was DAT)
+#define AUDIO_BTN1_PIN 21 // DC filter toggle (was BCK)
+#define AUDIO_BTN2_PIN 23 // SRC mode cycle (was DAT)
 
 // Debounce time in milliseconds
 #define BUTTON_DEBOUNCE_MS 50
@@ -27,7 +27,7 @@
 // Pipeline status (for display)
 typedef struct {
     // Capture stats
-    uint32_t capture_sample_rate;   // Measured input rate
+    uint32_t capture_sample_rate; // Measured input rate
     uint32_t samples_captured;
     uint32_t capture_overflows;
 

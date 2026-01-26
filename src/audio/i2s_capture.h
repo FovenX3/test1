@@ -8,13 +8,13 @@
 #ifndef I2S_CAPTURE_H
 #define I2S_CAPTURE_H
 
-#include "audio_common.h"
-#include "audio_buffer.h"
 #include "hardware/pio.h"
 
+#include "audio_buffer.h"
+#include "audio_common.h"
+
 // I2S capture configuration
-typedef struct
-{
+typedef struct {
     uint pin_bck; // Bit clock pin
     uint pin_dat; // Data pin
     uint pin_ws;  // Word select (LRCK) pin
@@ -23,8 +23,7 @@ typedef struct
 } i2s_capture_config_t;
 
 // I2S capture state
-typedef struct
-{
+typedef struct {
     i2s_capture_config_t config;
     ap_ring_t *ring; // Output ring buffer
     volatile uint32_t samples_captured;

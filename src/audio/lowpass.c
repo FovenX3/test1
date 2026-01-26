@@ -18,13 +18,14 @@
 // For Butterworth LPF at fc=20kHz, fs=49.14kHz:
 // Using bilinear transform with frequency pre-warping
 // These give gentle rolloff above 20kHz
-#define B0  18552   // ~0.283 * 65536
-#define B1  37104   // ~0.566 * 65536
-#define B2  18552   // ~0.283 * 65536
-#define A1  -7864   // ~-0.120 * 65536
-#define A2  17520   // ~0.267 * 65536
+#define B0 18552   // ~0.283 * 65536
+#define B1 37104   // ~0.566 * 65536
+#define B2 18552   // ~0.283 * 65536
+#define A1 (-7864) // ~-0.120 * 65536
+#define A2 17520   // ~0.267 * 65536
 
-void lowpass_init(lowpass_t *lp) {
+void lowpass_init(lowpass_t *lp)
+{
     lp->left.x1 = 0;
     lp->left.x2 = 0;
     lp->left.y1 = 0;
@@ -33,10 +34,11 @@ void lowpass_init(lowpass_t *lp) {
     lp->right.x2 = 0;
     lp->right.y1 = 0;
     lp->right.y2 = 0;
-    lp->enabled = true;  // On by default for anti-aliasing
+    lp->enabled = true; // On by default for anti-aliasing
 }
 
-void lowpass_set_enabled(lowpass_t *lp, bool enabled) {
+void lowpass_set_enabled(lowpass_t *lp, bool enabled)
+{
     lp->enabled = enabled;
     if (!enabled) {
         // Reset state
@@ -49,7 +51,8 @@ void lowpass_set_enabled(lowpass_t *lp, bool enabled) {
 
 // Process single sample through biquad
 // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
-static inline int16_t lowpass_process_sample(lowpass_channel_t *ch, int16_t in) {
+static inline int16_t lowpass_process_sample(lowpass_channel_t *ch, int16_t in)
+{
     // Scale input to Q16
     int32_t x0 = (int32_t)in << 16;
 
@@ -72,14 +75,18 @@ static inline int16_t lowpass_process_sample(lowpass_channel_t *ch, int16_t in) 
 
     // Convert back to int16
     int32_t out = y0 >> 16;
-    if (out > 32767) out = 32767;
-    if (out < -32768) out = -32768;
+    if (out > 32767)
+        out = 32767;
+    if (out < -32768)
+        out = -32768;
 
     return (int16_t)out;
 }
 
-void lowpass_process_buffer(lowpass_t *lp, audio_sample_t *samples, uint32_t count) {
-    if (!lp->enabled) return;
+void lowpass_process_buffer(lowpass_t *lp, audio_sample_t *samples, uint32_t count)
+{
+    if (!lp->enabled)
+        return;
 
     for (uint32_t i = 0; i < count; i++) {
         samples[i].left = lowpass_process_sample(&lp->left, samples[i].left);

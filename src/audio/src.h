@@ -17,17 +17,16 @@
 #define SRC_OUTPUT_RATE_DEFAULT 48000
 
 // SRC instance
-typedef struct
-{
+typedef struct {
     src_mode_t mode;
     uint32_t input_rate;
     uint32_t output_rate;
 
     // Internal state for algorithms
-    uint32_t accumulator;    // For DROP mode (bresenham)
-    uint32_t phase;          // For LINEAR mode (fixed-point position)
+    uint32_t accumulator;       // For DROP mode (bresenham)
+    uint32_t phase;             // For LINEAR mode (fixed-point position)
     audio_sample_t prev_sample; // For LINEAR mode (interpolation)
-    bool have_prev;          // LINEAR mode: do we have a previous sample?
+    bool have_prev;             // LINEAR mode: do we have a previous sample?
 } src_t;
 
 // Initialize SRC
@@ -50,9 +49,7 @@ static inline src_mode_t src_get_mode(src_t *s)
 // Output: buffer for samples at output rate
 // Returns: number of output samples written
 // Updates in_consumed with number of input samples consumed
-uint32_t src_process(src_t *s,
-                     const audio_sample_t *in, uint32_t in_count,
-                     audio_sample_t *out, uint32_t out_max,
+uint32_t src_process(src_t *s, const audio_sample_t *in, uint32_t in_count, audio_sample_t *out, uint32_t out_max,
                      uint32_t *in_consumed);
 
 #endif // SRC_H

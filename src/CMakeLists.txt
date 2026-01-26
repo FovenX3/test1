@@ -47,4 +47,3 @@ target_compile_definitions(neopico_hd PRIVATE
 pico_enable_stdio_usb(neopico_hd 1)
 pico_enable_stdio_uart(neopico_hd 0)
 pico_add_extra_outputs(neopico_hd)
-

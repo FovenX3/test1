@@ -1,8 +1,9 @@
 #ifndef VIDEO_PIPELINE_H
 #define VIDEO_PIPELINE_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+
 #include "pico.h"
 
 // Video effect toggles
@@ -11,7 +12,7 @@ extern bool fx_scanlines_enabled;
 /**
  * Fast 2x pixel doubling with darkening effect for scanlines.
  * Processes 32-bits (2 pixels) at a time for efficiency.
- * 
+ *
  * @param dst Destination buffer (must be 32-bit aligned)
  * @param src Source RGB565 buffer
  * @param count Number of source pixels to process

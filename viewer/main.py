@@ -128,18 +128,18 @@ def main():
 
     running = True
     resync_count = 0
-    
+
     # Tuning parameters (adjustable with keyboard)
     v_offset = 0  # Vertical offset adjustment
     h_offset = 0  # Horizontal offset adjustment
-    
+
     print("\nControls:")
     print("  W/S: Adjust vertical offset")
     print("  A/D: Adjust horizontal offset")
     print("  R: Reset offsets")
     print("  Q/ESC: Quit")
     print()
-    
+
     while running:
         # Handle pygame events
         for event in pygame.event.get():
@@ -177,7 +177,7 @@ def main():
             if resync_count % 10 == 0:
                 print(f"Resyncing... ({resync_count} total)")
             continue
-        
+
         resync_count = 0  # Reset on good frame
 
         # Unpack pixels

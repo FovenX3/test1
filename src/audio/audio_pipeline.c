@@ -8,9 +8,14 @@
  */
 
 #include "audio_pipeline.h"
-#include "hardware/gpio.h"
+
 #include "pico/time.h"
+
+#include "hardware/gpio.h"
+
 #include <string.h>
+
+#include "audio_common.h"
 
 // Processing buffer size (intermediate between stages)
 #define PROCESS_BUFFER_SIZE 64
@@ -28,15 +33,13 @@ bool audio_pipeline_init(audio_pipeline_t *p, const audio_pipeline_config_t *con
     ap_ring_init(&p->capture_ring);
 
     // Initialize capture
-    i2s_capture_config_t cap_config = {
-        .pin_bck = config->pin_bck,
-        .pin_dat = config->pin_dat,
-        .pin_ws = config->pin_ws,
-        .pio = config->pio,
-        .sm = config->sm};
+    i2s_capture_config_t cap_config = {.pin_bck = config->pin_bck,
+                                       .pin_dat = config->pin_dat,
+                                       .pin_ws = config->pin_ws,
+                                       .pio = config->pio,
+                                       .sm = config->sm};
 
-    if (!i2s_capture_init(&p->capture, &cap_config, &p->capture_ring))
-    {
+    if (!i2s_capture_init(&p->capture, &cap_config, &p->capture_ring)) {
         return false;
     }
 
@@ -50,7 +53,7 @@ bool audio_pipeline_init(audio_pipeline_t *p, const audio_pipeline_config_t *con
 
     // Initialize SRC (DROP mode by default - proper decimation)
     src_init(&p->src, SRC_INPUT_RATE_DEFAULT, SRC_OUTPUT_RATE_DEFAULT);
-    p->src.mode = SRC_MODE_DROP;
+    p->src.mode = SRC_MODE_LINEAR;
 
     // Configure button pins as inputs with pull-ups
     // Skip in HSTX_LAB_BUILD - buttons not used there
@@ -105,14 +108,12 @@ void audio_pipeline_process(audio_pipeline_t *p, audio_output_fn output_fn, void
         return;
 
     // Limit to buffer size
-    if (available > PROCESS_BUFFER_SIZE)
-    {
+    if (available > PROCESS_BUFFER_SIZE) {
         available = PROCESS_BUFFER_SIZE;
     }
 
     // Read samples into processing buffer
-    for (uint32_t i = 0; i < available; i++)
-    {
+    for (uint32_t i = 0; i < available; i++) {
         process_in[i] = ap_ring_read(&p->capture_ring);
     }
 
@@ -124,14 +125,10 @@ void audio_pipeline_process(audio_pipeline_t *p, audio_output_fn output_fn, void
 
     // Apply sample rate conversion
     uint32_t in_consumed = 0;
-    uint32_t out_count = src_process(&p->src,
-                                     process_in, available,
-                                     process_out, PROCESS_BUFFER_SIZE,
-                                     &in_consumed);
+    uint32_t out_count = src_process(&p->src, process_in, available, process_out, PROCESS_BUFFER_SIZE, &in_consumed);
 
     // Output processed samples
-    if (out_count > 0)
-    {
+    if (out_count > 0) {
         output_fn(process_out, out_count, ctx);
         p->samples_output += out_count;
     }
@@ -149,10 +146,8 @@ void audio_pipeline_poll_buttons(audio_pipeline_t *p)
     bool btn2_pressed = !gpio_get(p->config.pin_btn2);
 
     // Button 1: Toggle DC filter (on press with debounce)
-    if (btn1_pressed && !p->btn1_last_state)
-    {
-        if (now - p->btn1_last_press > BUTTON_DEBOUNCE_MS)
-        {
+    if (btn1_pressed && !p->btn1_last_state) {
+        if (now - p->btn1_last_press > BUTTON_DEBOUNCE_MS) {
             dc_filter_toggle(&p->dc_filter);
             p->btn1_last_press = now;
         }
@@ -160,10 +155,8 @@ void audio_pipeline_poll_buttons(audio_pipeline_t *p)
     p->btn1_last_state = btn1_pressed;
 
     // Button 2: Cycle SRC mode (on press with debounce)
-    if (btn2_pressed && !p->btn2_last_state)
-    {
-        if (now - p->btn2_last_press > BUTTON_DEBOUNCE_MS)
-        {
+    if (btn2_pressed && !p->btn2_last_state) {
+        if (now - p->btn2_last_press > BUTTON_DEBOUNCE_MS) {
             src_cycle_mode(&p->src);
             p->btn2_last_press = now;
         }
@@ -173,8 +166,7 @@ void audio_pipeline_poll_buttons(audio_pipeline_t *p)
 
 void audio_pipeline_get_status(audio_pipeline_t *p, audio_pipeline_status_t *status)
 {
-    if (!p->initialized)
-    {
+    if (!p->initialized) {
         memset(status, 0, sizeof(*status));
         return;
     }

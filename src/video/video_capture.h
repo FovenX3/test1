@@ -1,9 +1,10 @@
 #ifndef VIDEO_CAPTURE_H
 #define VIDEO_CAPTURE_H
 
-#include <stdint.h>
-#include <stdbool.h>
 #include "pico/types.h"
+
+#include <stdbool.h>
+#include <stdint.h>
 
 /**
  * Initialize MVS video capture

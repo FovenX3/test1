@@ -23,7 +23,7 @@ As pixels are read from the RGB565 framebuffer to be doubled for 480p output, th
 
 ## Critical Timing Constraints (Core 1)
 
-The OSD injection logic runs inside the **Core 1 DMA ISR**, which is the most time-critical part of the firmware. 
+The OSD injection logic runs inside the **Core 1 DMA ISR**, which is the most time-critical part of the firmware.
 
 ### 1. The H-Blank Deadline
 The HSTX hardware consumes data at 25.2 MHz. The ISR must finish processing a complete scanline (640 pixels) within the horizontal blanking interval of the previous line. If the ISR execution time exceeds this window, the HSTX FIFO will underrun, causing the HDMI signal to drop (No Signal).

@@ -28,7 +28,7 @@ LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
 
 if [ -n "$LATEST_TAG" ]; then
     echo "Latest tag: $LATEST_TAG"
-    
+
     # Check for differences since last tag
     if git diff --quiet "$LATEST_TAG"..HEAD; then
         echo "i No changes detected since $LATEST_TAG."
@@ -67,7 +67,7 @@ if [ -z "$1" ]; then
     IFS='.' read -ra ADDR <<< "$VERSION_PART"
     PATCH=$((ADDR[2] + 1))
     SUGGESTED_VERSION="v${ADDR[0]}.${ADDR[1]}.$PATCH"
-    
+
     read -p "Enter new version [$SUGGESTED_VERSION]: " NEW_VERSION
     NEW_VERSION=${NEW_VERSION:-$SUGGESTED_VERSION}
 else
