@@ -11,62 +11,61 @@
 // =============================================================================
 // MVS Video Input Pins - GP27-44 CONTIGUOUS LAYOUT
 // =============================================================================
-// Captures RGB555 + DARK + SHADOW from Neo Geo MVS
+// Captures RGB555 + SHADOW from Neo Geo MVS (this layout has no DARK pin).
 //
-// GP27-44: 18-pin capture window (CONTIGUOUS bit fields for performance)
-// GP45:    CSYNC (outside capture window, read separately)
+// 18-pin capture window: GP27 (LSB) through GP44 (MSB).
+// PIO captures with 'in pins, 18' from IN_BASE = GP27.
 //
-// OPTIMIZED Pin mapping (Shift +2):
-//   PCLK:   GP27 (position 0 - CRITICAL!)
-//   Red:    R0=GP28, R1=GP29, R2=GP30, R3=GP31, R4=GP32 (5 bits, contiguous)
-//   Green:  G0=GP33, G1=GP34, G2=GP35, G3=GP36, G4=GP37 (5 bits, contiguous)
-//   Blue:   B0=GP38, B1=GP39, B2=GP40, B3=GP41, B4=GP42 (5 bits, contiguous)
-//   DARK:   GP43 (1 bit)
-//   SHADOW: GP44 (1 bit)
-//   CSYNC:  GP45 (outside 18-pin window, separate PIO SM)
+// Pin mapping (LSB to MSB in captured word):
+//   Bit 0:      GP27 (CSYNC)
+//   Bit 1:      GP28 (PCLK)
+//   Bits 2-6:   GP29-33 (Blue B4-B0, contiguous)
+//   Bits 7-11:  GP34-38 (Green G4-G0, contiguous)
+//   Bits 12-16: GP39-43 (Red R4-R0, contiguous)
+//   Bit 17:     GP44 (SHADOW)
 //
-// PIO captures GP27-44 (18 consecutive pins) using 'in pins, 18'
+// With PIO GPIOBASE=16, pin index N = GP(N+16). So IN_BASE=11 → GP27.
 
-#define PIN_MVS_PCLK 27  // Pixel clock (6 MHz, position 0)
-#define PIN_MVS_CSYNC 45 // Composite sync (outside capture window)
-#define PIN_MVS_BASE 27  // Base pin - capture GP27-44 (18 pins, PCLK first)
+#define PIN_MVS_CSYNC 27 // Composite sync (position 0 in capture word)
+#define PIN_MVS_PCLK 28  // Pixel clock (6 MHz, position 1)
+#define PIN_MVS_BASE 27  // Base pin - capture GP27-44 (18 pins), CSYNC first
 
-// Red channel (R0-R4) - CONTIGUOUS at bits 1-5
-#define PIN_MVS_R0 28
-#define PIN_MVS_R1 29
-#define PIN_MVS_R2 30
-#define PIN_MVS_R3 31
-#define PIN_MVS_R4 32
+// Blue channel (B4-B0) - CONTIGUOUS at bits 2-6
+#define PIN_MVS_B4 29
+#define PIN_MVS_B3 30
+#define PIN_MVS_B2 31
+#define PIN_MVS_B1 32
+#define PIN_MVS_B0 33
 
-// Green channel (G0-G4) - CONTIGUOUS at bits 6-10
-#define PIN_MVS_G0 33
-#define PIN_MVS_G1 34
-#define PIN_MVS_G2 35
-#define PIN_MVS_G3 36
-#define PIN_MVS_G4 37
+// Green channel (G4-G0) - CONTIGUOUS at bits 7-11
+#define PIN_MVS_G4 34
+#define PIN_MVS_G3 35
+#define PIN_MVS_G2 36
+#define PIN_MVS_G1 37
+#define PIN_MVS_G0 38
 
-// Blue channel (B0-B4) - CONTIGUOUS at bits 11-15
-#define PIN_MVS_B0 38
-#define PIN_MVS_B1 39
-#define PIN_MVS_B2 40
-#define PIN_MVS_B3 41
-#define PIN_MVS_B4 42
+// Red channel (R4-R0) - CONTIGUOUS at bits 12-16
+#define PIN_MVS_R4 39
+#define PIN_MVS_R3 40
+#define PIN_MVS_R2 41
+#define PIN_MVS_R1 42
+#define PIN_MVS_R0 43
 
-// Special effects (bits 16-17)
-#define PIN_MVS_DARK 43   // Bit 16
-#define PIN_MVS_SHADOW 44 // Bit 17
+// Special effects
+#define PIN_MVS_SHADOW 44 // Bit 17 (no DARK pin in this hardware layout)
 
 // =============================================================================
-// I2S Audio Input Pins (GPIO 0-2)
+// I2S Audio Input Pins (rewired: DAT=GP0, WS=GP2, BCK=GP4)
 // =============================================================================
 #define PIN_I2S_DAT 0 // I2S data
-#define PIN_I2S_WS 1  // I2S word select
-#define PIN_I2S_BCK 2 // I2S bit clock
+#define PIN_I2S_WS 2  // I2S word select
+#define PIN_I2S_BCK 4 // I2S bit clock
 
 // =============================================================================
 // OSD Control (Direct Buttons)
 // =============================================================================
-#define PIN_OSD_BTN_MENU 3 // Menu / Select Button
-#define PIN_OSD_BTN_BACK 4 // Back / Cycle Button
+// Custom PCB (WeAct RP2350B): SW_MENU=GP25, SW_BACK=GP26. Change if different.
+#define PIN_OSD_BTN_MENU 25 // Menu / Select Button
+#define PIN_OSD_BTN_BACK 26 // Back / Cycle Button
 
 #endif // MVS_PINS_H

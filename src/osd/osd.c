@@ -16,7 +16,7 @@ uint16_t __attribute__((aligned(4))) osd_framebuffer[OSD_BOX_H][OSD_BOX_W];
 void osd_init(void)
 {
     osd_clear();
-    osd_visible = true;
+    osd_visible = false;
 }
 
 void osd_clear(void)
