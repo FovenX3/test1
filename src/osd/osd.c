@@ -3,6 +3,8 @@
 #include <string.h>
 
 #include "font_8x8.h"
+#include "pico.h"
+#include "video/video_config.h"
 
 // OSD state
 volatile bool osd_visible = false;

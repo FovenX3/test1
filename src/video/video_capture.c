@@ -26,24 +26,18 @@
 // Feature Flags
 // =============================================================================
 
-// DARK/SHADOW processing (disabled)
-// When enabled, uses 64KB LUT indexed by PIO bit order:
-// [15:DARK][14-10:B][9-5:G][4-0:R] Currently disabled: causes pixel jitter, and
-// visual difference vs MAME is imperceptible. DARK subtracts ~1.5% brightness,
-// SHADOW halves brightness for sprite shadows. Most games don't heavily use
-// these effects. Re-enable if needed for specific titles.
-#define ENABLE_DARK_SHADOW 1
+// SHADOW processing (no DARK pin in this hardware layout).
+// When enabled, uses 32KB LUT indexed by RGB555.
+// Disabled: was causing poor image quality (RF-like); re-enable if needed.
+#define ENABLE_DARK_SHADOW 0
 
 #if ENABLE_DARK_SHADOW
-#include "hardware/interp.h"
-
-// 64KB LUT - indexed directly by (raw >> 1) & 0xFFFF
+// 32KB LUT - indexed by (r | g<<5 | b<<10 | dark<<15); built from PIO R/G/B bits
 static uint16_t g_pixel_lut[65536] __attribute__((aligned(4)));
 
 static void generate_pixel_lut(void)
 {
-    // LUT indexed by: [15:DARK][14-10:B][9-5:G][4-0:R] (matches PIO capture
-    // order)
+    // LUT indexed by: [15:DARK][14-10:B][9-5:G][4-0:R]
     for (uint32_t idx = 0; idx < 65536; idx++) {
         uint32_t r5 = idx & 0x1F;
         uint32_t g5 = (idx >> 5) & 0x1F;
@@ -65,19 +59,6 @@ static void generate_pixel_lut(void)
         // Pack as RGB565
         g_pixel_lut[idx] = ((r8 >> 3) << 11) | ((g8 >> 2) << 5) | (b8 >> 3);
     }
-}
-
-static void init_interp_for_lut(void)
-{
-    // Configure interpolator for fast LUT lookup
-    // Input: raw PIO value
-    // Output: pointer to LUT entry
-    // Mask bits 1-16: extracts (raw >> 1) & 0xFFFF, pre-scaled by 2 for uint16_t
-    interp_config cfg = interp_default_config();
-    interp_config_set_shift(&cfg, 0);
-    interp_config_set_mask(&cfg, 1, 16); // bits 1-16 -> byte offset
-    interp_set_config(interp0, 0, &cfg);
-    interp0->base[0] = (uintptr_t)g_pixel_lut;
 }
 #endif
 
@@ -119,30 +100,99 @@ static int g_consecutive_frames = 0;
 // Pixel Conversion
 // =============================================================================
 
+// Custom PCB color correction (try combinations if colors are wrong)
+// - Invert: channel logic inverted on PCB (XOR with 0x1F)
+// - Reverse: MSB/LSB swapped on PCB (reverse bit order within 5-bit channel)
+// - Raw mask: XOR with 15-bit color before extracting R/G/B. Bit layout in mask:
+//     bits 0-4: B (1=invert B0, 2=B1, 4=B2, 8=B3, 16=B4)
+//     bits 5-9: G (0x20=G0 .. 0x200=G4)
+//     bits 10-14: R (0x400=R0 .. 0x4000=R4)
+//   Examples: 0x001F=invert B, 0x03E0=invert G, 0x7C00=invert R
+#define MVS_INVERT_R 0
+#define MVS_INVERT_G 0
+#define MVS_INVERT_B 0
+// PCB wires MSB (R4/G4/B4) to lower GPIO → capture has MSB in LSB of each 5-bit field; reverse all three
+#define MVS_REVERSE_R 1
+#define MVS_REVERSE_G 1
+#define MVS_REVERSE_B 1
+#define MVS_RAW_COLOR_MASK 0
+// Channel swap: PCB may have R/G/B pins wired to different channels (1 = enable swap)
+#define MVS_SWAP_RG 0
+#define MVS_SWAP_RB 0
+#define MVS_SWAP_GB 0
+// Reverse entire 15-bit color word (bus wired MSB↔LSB on PCB)
+#define MVS_REVERSE_15BIT 0
+
+static inline uint32_t mvs_reverse_15(uint32_t x)
+{
+    x &= 0x7FFF;
+    return ((x & 0x0001U) << 14) | ((x & 0x0002U) << 12) | ((x & 0x0004U) << 10) | ((x & 0x0008U) << 8) |
+           ((x & 0x0010U) << 6) | ((x & 0x0020U) << 4) | ((x & 0x0040U) << 2) | ((x & 0x0080U) << 0) |
+           ((x & 0x0100U) >> 2) | ((x & 0x0200U) >> 4) | ((x & 0x0400U) >> 6) | ((x & 0x0800U) >> 8) |
+           ((x & 0x1000U) >> 10) | ((x & 0x2000U) >> 12) | ((x & 0x4000U) >> 14);
+}
+
+static inline uint32_t mvs_correct_5bit(uint32_t x, int invert, int reverse)
+{
+    if (reverse) {
+        x = ((x & 1U) << 4) | ((x & 2U) << 2) | (x & 4U) | ((x & 8U) >> 2) | ((x & 16U) >> 4);
+    }
+    if (invert) {
+        x ^= 0x1F;
+    }
+    return x & 0x1F;
+}
+
+// 32K LUT: raw 15-bit capture -> RGB565 (corrections baked in at init; one lookup per pixel)
+static uint16_t g_color_correct_lut[32768] __attribute__((aligned(4)));
+
+static void generate_color_correct_lut(void)
+{
+    for (uint32_t idx = 0; idx < 32768U; idx++) {
+        uint32_t r5 = mvs_correct_5bit((idx >> 10) & 0x1F, MVS_INVERT_R, MVS_REVERSE_R);
+        uint32_t g5 = mvs_correct_5bit((idx >> 5) & 0x1F, MVS_INVERT_G, MVS_REVERSE_G);
+        uint32_t b5 = mvs_correct_5bit(idx & 0x1F, MVS_INVERT_B, MVS_REVERSE_B);
+        uint32_t tmp;
+#if MVS_SWAP_RG
+        tmp = r5;
+        r5 = g5;
+        g5 = tmp;
+#endif
+#if MVS_SWAP_RB
+        tmp = r5;
+        r5 = b5;
+        b5 = tmp;
+#endif
+#if MVS_SWAP_GB
+        tmp = g5;
+        g5 = b5;
+        b5 = tmp;
+#endif
+        g_color_correct_lut[idx] = (uint16_t)((r5 << 11) | (g5 << 6) | (g5 >> 4) | b5);
+    }
+}
+
 // Direct conversion: RGB555 (from PIO) -> RGB565 (for HDMI)
-// PIO captures 18 bits: [17:SHADOW][16:DARK][15-11:B][10-6:G][5-1:R][0:PCLK]
+// PIO captures 18 bits: [17:SHADOW][16-12:R][11-7:G][6-2:B][1:PCLK][0:CSYNC]
+// Hot path: one LUT lookup (no per-pixel reverse/pack).
 static inline uint16_t convert_pixel(uint32_t raw)
 {
+    uint32_t color15 = ((raw >> 2) & 0x7FFF) ^ (MVS_RAW_COLOR_MASK & 0x7FFF);
+#if MVS_REVERSE_15BIT
+    color15 = mvs_reverse_15(color15);
+#endif
 #if ENABLE_DARK_SHADOW
-    // Check SHADOW bit (rare case)
     if (__builtin_expect((raw >> 17) & 1, 0)) {
-        // SHADOW: halve each 5-bit component, force DARK, then LUT
-        uint32_t r5 = ((raw >> 1) & 0x1F) >> 1;
-        uint32_t g5 = ((raw >> 6) & 0x1F) >> 1;
-        uint32_t b5 = ((raw >> 11) & 0x1F) >> 1;
+        uint32_t r5 = mvs_correct_5bit((color15 >> 10) & 0x1F, MVS_INVERT_R, MVS_REVERSE_R);
+        uint32_t g5 = mvs_correct_5bit((color15 >> 5) & 0x1F, MVS_INVERT_G, MVS_REVERSE_G);
+        uint32_t b5 = mvs_correct_5bit(color15 & 0x1F, MVS_INVERT_B, MVS_REVERSE_B);
+        r5 >>= 1;
+        g5 >>= 1;
+        b5 >>= 1;
         return g_pixel_lut[(1 << 15) | (b5 << 10) | (g5 << 5) | r5];
     }
-    // Fast path: single-cycle interp lookup (handles DARK automatically)
-    interp0->accum[0] = raw;
-    return *(uint16_t *)interp0->peek[0];
-#else
-    // Direct bit extraction (ignores DARK/SHADOW)
-    uint16_t r = (raw >> 1) & 0x1F;  // bits 1-5
-    uint16_t g = (raw >> 6) & 0x1F;  // bits 6-10
-    uint16_t b = (raw >> 11) & 0x1F; // bits 11-15
-    // RGB565: RRRRR GGGGGG BBBBB (green gets MSB duplicated)
-    return (r << 11) | (g << 6) | (g >> 4) | b;
 #endif
+    return g_color_correct_lut[color15];
 }
 
 // =============================================================================
@@ -244,10 +294,9 @@ void video_capture_init(uint mvs_height)
     g_mvs_height = mvs_height;
 
 #if ENABLE_DARK_SHADOW
-    // Generate 64KB LUT for RGB555->RGB565 with DARK support
     generate_pixel_lut();
-    init_interp_for_lut();
 #endif
+    generate_color_correct_lut();
 
     // 18-bit capture: 1 pixel per word
     g_skip_start_words = H_SKIP_START;
@@ -262,7 +311,7 @@ void video_capture_init(uint mvs_height)
 
     g_pio_mvs = pio1;
 
-    // 1. Force GPIOBASE to 16
+    // 1. Force PIO1 GPIOBASE to 16 (pin index N = GP(N+16); GP27 = index 11)
     *(volatile uint32_t *)((uintptr_t)g_pio_mvs + 0x168) = 16;
 
     // 2. Add programs
@@ -274,34 +323,32 @@ void video_capture_init(uint mvs_height)
     g_sm_sync = (uint)pio_claim_unused_sm(g_pio_mvs, true);
     g_sm_pixel = (uint)pio_claim_unused_sm(g_pio_mvs, true);
 
-    // 4. Setup GPIOs (GP25-43: PCLK, RGB, DARK, SHADOW, CSYNC)
-    for (uint i = PIN_MVS_BASE; i <= PIN_MVS_CSYNC; i++) {
+    // 4. Setup GPIOs GP27-44 (CSYNC, PCLK, B, G, R, SHADOW)
+    for (uint i = PIN_MVS_BASE; i <= PIN_MVS_SHADOW; i++) {
         pio_gpio_init(g_pio_mvs, i);
         gpio_disable_pulls(i);
         gpio_set_input_enabled(i, true);
         gpio_set_input_hysteresis_enabled(i, true);
     }
 
-    // 5. Configure Sync SM (GP45 as CSYNC)
+    // 5. Configure Sync SM: CSYNC = GP27 (pin index 11 with GPIOBASE=16)
     pio_sm_config c = mvs_sync_4a_program_get_default_config(g_offset_sync);
     sm_config_set_clkdiv(&c, 1.0F);
     sm_config_set_in_shift(&c, false, false, 32);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
     pio_sm_init(g_pio_mvs, g_sm_sync, g_offset_sync, &c);
 
-    // MANUAL REGISTER OVERRIDE for Sync SM
-    uint pin_idx_sync = 29;
+    uint pin_idx_sync = PIN_MVS_BASE - 16; // 11: GP27 = CSYNC (wait/jmp pin)
     g_pio_mvs->sm[g_sm_sync].pinctrl = (g_pio_mvs->sm[g_sm_sync].pinctrl & ~0x000f8000) | (pin_idx_sync << 15);
     g_pio_mvs->sm[g_sm_sync].execctrl = (g_pio_mvs->sm[g_sm_sync].execctrl & ~0x1f000000) | (pin_idx_sync << 24);
 
-    // 6. Configure Pixel SM (GP27 as IN_BASE)
+    // 6. Configure Pixel SM: IN_BASE = GP27 (pin index 11), capture GP27-44
     pio_sm_config pc = mvs_pixel_capture_program_get_default_config(g_offset_pixel);
     sm_config_set_clkdiv(&pc, 1.0F);
     sm_config_set_in_shift(&pc, false, true, 18);
     pio_sm_init(g_pio_mvs, g_sm_pixel, g_offset_pixel, &pc);
 
-    // MANUAL REGISTER OVERRIDE for Pixel SM
-    uint pin_idx_pixel = 11;
+    uint pin_idx_pixel = PIN_MVS_BASE - 16; // 11: first pin of 18-pin capture
     g_pio_mvs->sm[g_sm_pixel].pinctrl = (g_pio_mvs->sm[g_sm_pixel].pinctrl & ~0x000f8000) | (pin_idx_pixel << 15);
 
     // 7. Start
