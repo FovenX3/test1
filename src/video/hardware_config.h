@@ -3,29 +3,32 @@
 
 #include <stdint.h>
 
-#include "mvs_pins.h"
+// =============================================================================
+// Pin Definitions (RP2350B / Pico 2)
+// =============================================================================
+
+// 同步信号输入
+#define PIN_HSYNC       0   // 对应 LCD Pin 33
+#define PIN_VSYNC       1   // 对应 LCD Pin 34
+#define PIN_PCLK        2   // 对应 LCD Pin 35
+
+// RGB 数据输入 (16位连续)
+// 接线映射 (RGB565格式):
+// GPIO 20-24 (5 bit) <--- LCD Blue (B3-B7)  [GPIO20=B3 ... GPIO24=B7]
+// GPIO 25-30 (6 bit) <--- LCD Green (G2-G7) [GPIO25=G2 ... GPIO30=G7]
+// GPIO 31-35 (5 bit) <--- LCD Red   (R3-R7) [GPIO31=R3 ... GPIO35=R7]
+#define PIN_RGB_BASE    20
+#define PIN_RGB_COUNT   16
 
 // =============================================================================
-// GP27-44 Contiguous Bit Field Extraction
+// Pixel Format Helper
 // =============================================================================
-// PIO reads GP27-44 (18 pins) with IN_BASE = GP27. LSB first in capture word.
-//
-// 18-bit capture layout:
-//   Bit 0:      GP27 (CSYNC)
-//   Bit 1:      GP28 (PCLK)
-//   Bits 2-6:   GP29-33 (Blue B4-B0, contiguous)
-//   Bits 7-11:  GP34-38 (Green G4-G0, contiguous)
-//   Bits 12-16: GP39-43 (Red R4-R0, contiguous)
-//   Bit 17:     GP44 (SHADOW)
-//
-// RGB555 format: RRRRR GGGGG BBBBB (bits 12-16: R, 7-11: G, 2-6: B)
-
-static inline uint16_t extract_rgb555_contiguous(uint32_t gpio_data)
+// 由于我们通过硬件接线直接匹配了 RGB565 的位序 (LSB at GPIO 20, MSB at GPIO 35)
+// 所以这里不需要软件转换，直接返回原始数据即可。
+static inline uint16_t extract_pixel(uint32_t raw_val)
 {
-    uint8_t r = (gpio_data >> 12) & 0x1F; // Bits 12-16: Red (GP39-43)
-    uint8_t g = (gpio_data >> 7) & 0x1F;  // Bits 7-11: Green (GP34-38)
-    uint8_t b = (gpio_data >> 2) & 0x1F;  // Bits 2-6: Blue (GP29-33)
-    return (r << 10) | (g << 5) | b;
+    // 硬件直接采集到的就是标准的 RGB565
+    return (uint16_t)raw_val;
 }
 
 #endif // HARDWARE_CONFIG_H

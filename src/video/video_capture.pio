@@ -1,62 +1,53 @@
-; MVS CSYNC Decoder
-;
-; Sync SM uses IN_BASE = GP27 (CSYNC). With GPIOBASE=16, pin index 11 = GP27.
-; C code sets pinctrl/execctrl so that pin 0 = CSYNC, pin 1 = PCLK (GP28).
+.program video_capture
 
-.program mvs_sync_4a
+; 适配 RP2350B 并行 RGB565 采集
+; 必须在 C 代码中配置:
+; - IN PINS: GPIO 20 (base), count 16
+; - JMP PIN: GPIO 1 (VSYNC)
+; - WAIT PIN: GPIO 0 (HSYNC)
+; - PCLK PIN: GPIO 2 (用于同步)
 
 public entry_point:
-    wait 1 pin 0               ; Wait for CSYNC High (IN_BASE = GP27)
-    mov x, !null                ; Initialize counter
-count_loop:
-    wait 0 pin 1                ; Wait for PCLK Low (pin 1 = GP28)
-    wait 1 pin 1                ; Wait for PCLK High (GP28)
-    jmp x-- check_pin           ; Decrement X
-check_pin:
-    jmp pin count_loop          ; If CSYNC still High, keep counting (JMP_PIN = GP27)
+    ; 等待 HSYNC 变低 (行开始, Active Low)
+    wait 0 gpio 0
 
-    ; CSYNC went Low - push count and raise IRQ for event-driven vsync (Core 0)
-    mov isr, !x
-    push noblock
-    irq set 0
+    ; --- 处理 Horizontal Back Porch (tHBP = 68 Clocks) ---
+    ; 根据 UMSH-8065MD-11T 手册，HSYNC 下降沿后有 68 个时钟的无效数据
+    
+    set x, 31           ; 计数 32
+delay_1:
+    wait 1 gpio 2       ; 等待 PCLK 上升
+    wait 0 gpio 2       ; 等待 PCLK 下降
+    jmp x-- delay_1     ; 消耗 32 个周期
+
+    set x, 31           ; 再计数 32
+delay_2:
+    wait 1 gpio 2
+    wait 0 gpio 2
+    jmp x-- delay_2     ; 共 64 个周期
+
+    ; 剩余 4 个周期 (64 + 4 = 68)
+    wait 1 gpio 2; wait 0 gpio 2
+    wait 1 gpio 2; wait 0 gpio 2
+    wait 1 gpio 2; wait 0 gpio 2
+    wait 1 gpio 2; wait 0 gpio 2
+
+    ; --- 采集 320 个像素 ---
+    ; 由于 PIO 寄存器限制，分两段循环: 20 次 * 16 像素 = 320 像素
+    set y, 19           ; 外循环 20 次
+    
+pixel_loop_outer:
+    set x, 15           ; 内循环 16 次
+    
+pixel_loop_inner:
+    wait 1 gpio 2       ; **关键采样点**: PCLK 上升沿
+    in pins, 16         ; 采集 GPIO 20-35 的数据
+    wait 0 gpio 2       ; 等待 PCLK 下降
+    jmp x-- pixel_loop_inner
+    
+    jmp y-- pixel_loop_outer
+
+    ; --- 行结束 ---
+    ; 等待 HSYNC 变高 (结束)，防止单行重复触发
+    wait 1 gpio 0
     jmp entry_point
-
-
-; MVS Pixel Capture - 18-bit contiguous (GP27-44)
-;
-; IN_BASE = GP27 (pin index 11 with GPIOBASE=16).
-; Captures 18 consecutive pins: GP27 (LSB) .. GP44 (MSB).
-;
-;   Bit 0:     GP27 (CSYNC)
-;   Bit 1:     GP28 (PCLK)
-;   Bits 2-6:  GP29-33 (Blue B4-B0)
-;   Bits 7-11: GP34-38 (Green G4-G0)
-;   Bits 12-16: GP39-43 (Red R4-R0)
-;   Bit 17:    GP44 (SHADOW)
-;
-; Autopush at 18 bits = 1 pixel per FIFO word.
-
-.program mvs_pixel_capture
-
-    ; One-time initialization: C code will push (NEO_H_TOTAL - 1)
-    pull block
-    mov y, osr
-
-    ; Wait for trigger signal from C code (IRQ 4) at start of frame
-    wait 1 irq 4
-
-.wrap_target
-    ; 1. Sync to line start (CSYNC = pin 0 = GP27)
-    wait 0 pin 0                ; Wait for CSYNC LOW
-    wait 1 pin 0                ; Wait for CSYNC HIGH
-
-    ; 2. Sample NEO_H_TOTAL pixels
-    mov x, y                    ; Reset pixel counter
-pixel_loop:
-    wait 0 pin 1                ; Wait for PCLK LOW (pin 1 = GP28)
-    wait 1 pin 1                ; Wait for PCLK HIGH (rising edge = data valid)
-    nop                         ; Data setup: allow MVS outputs to settle
-    nop                         ; Extra cycle for hold margin (reduces wobble)
-    in pins, 18                  ; Sample GP27-44 (CSYNC, PCLK, B, G, R, SHADOW)
-    jmp x-- pixel_loop          ; Loop until line complete
-.wrap

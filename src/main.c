@@ -1,81 +1,49 @@
-/**
- * NeoPico-HD - MVS Video Capture + HSTX Output
- *
- * Streaming architecture: line ring buffer between Core 0 (capture) and Core 1 (output)
- */
-
 #include "pico_hdmi/hstx_data_island_queue.h"
 #include "pico_hdmi/video_output.h"
-
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
-
 #include "hardware/clocks.h"
-
 #include <stdio.h>
 #include <string.h>
 
-#include "audio_subsystem.h"
-#include "mvs_pins.h"
-#include "osd/osd.h"
-#include "video/line_ring.h"
 #include "video/video_config.h"
 #include "video/video_pipeline.h"
 #include "video_capture.h"
+#include "video/video_buffers.h" 
 
-// Line ring buffer (shared between Core 0 and Core 1)
-line_ring_t g_line_ring __attribute__((aligned(64)));
-
-// ============================================================================
-// Main (Core 0)
-// ============================================================================
+// --- 全局变量定义 ---
+// 分配在 RAM 中的帧缓冲区 (RP2350 专用)
+uint16_t g_frame_buf[2][FRAME_WIDTH * FRAME_HEIGHT];
+volatile int g_display_idx = 0;
 
 int main(void)
 {
-    // Set system clock to 126 MHz for HSTX timing
+    // 【关键修正】设置系统时钟为 126 MHz
+    // RP2350 HSTX HDMI 库通常基于 126 MHz 时钟生成 640x480 @ 60Hz 时序 (25.2 MHz Pixel Clock)
+    // 之前设置 252 MHz 导致输出频率错误，显示器提示不支持
     set_sys_clock_khz(126000, true);
 
     stdio_init_all();
-
-    // Initialize LED for heartbeat
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-
-    // Initialize OSD button (active low with internal pull-up)
-    // Wire button between GPIO and GND
-    gpio_init(PIN_OSD_BTN_MENU);
-    gpio_set_dir(PIN_OSD_BTN_MENU, GPIO_IN);
-    gpio_pull_up(PIN_OSD_BTN_MENU);
-
     sleep_ms(1000);
-    stdio_flush();
 
-    // Initialize line ring buffer
-    memset(&g_line_ring, 0, sizeof(g_line_ring));
+    // 清空缓冲区
+    memset(g_frame_buf, 0, sizeof(g_frame_buf));
 
-    // Initialize OSD (hidden by default, press MENU button to toggle)
-    osd_init();
-    osd_puts(8, 8, "NeoPico-HD");
-    osd_puts(8, 24, "Press MENU to hide");
-
-    // Initialize video pipeline (HDMI output + callbacks)
+    // 初始化 HDMI 队列与管道
     hstx_di_queue_init();
+    
+    // 初始化视频管道 (输出 640x480)
     video_pipeline_init(FRAME_WIDTH, FRAME_HEIGHT);
 
-    // Initialize video capture
+    // 初始化采集 (GPIO, PIO, DMA)
     video_capture_init(MVS_HEIGHT);
-    sleep_ms(200);
 
-    // Initialize audio subsystem (capture starts after video lock in video_capture_run)
-    audio_subsystem_init();
-    stdio_flush();
-
-    // Launch Core 1 for HSTX output
+    // 启动 Core 1 运行 HDMI 输出线程
     multicore_launch_core1(video_output_core1_run);
+    
     sleep_ms(100);
 
-    // Core 0: Run video capture loop (never returns)
-    // This captures lines into the ring buffer and signals VSYNC to Core 1
+    // Core 0 运行视频采集
     video_capture_run();
 
     return 0;
